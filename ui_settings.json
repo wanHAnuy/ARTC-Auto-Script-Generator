@@ -1,0 +1,25 @@
+{
+  "theme": "space",
+  "dropdowns": {
+    "Cell type :": "Cubic",
+    "Speed:": "10",
+    "Directions:": "X",
+    "Cell size:": "5",
+    "Strut radius:": "0.5"
+  },
+  "checkboxes": {
+    "Speed:": false,
+    "Directions:": true
+  },
+  "slider_value": 4,
+  "slider_checkbox": false,
+  "slider_values": {
+    "Cubic": 4
+  },
+  "window_geometry": {
+    "x": 96,
+    "y": -16,
+    "width": 1500,
+    "height": 918
+  }
+}
