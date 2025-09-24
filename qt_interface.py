@@ -7,6 +7,7 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QPalette, QIcon
 from visualization_widget import CellVisualizationWidget
 from script_generator import generate_abaqus_script
+# 避免循环导入，在需要时动态导入
 
 
 class ModernInterface(QMainWindow):
@@ -241,6 +242,20 @@ class ModernInterface(QMainWindow):
         self.generate_button.clicked.connect(self.generate_config)
         
         button_layout.addWidget(self.generate_button)
+
+        # 添加间距
+        button_layout.addSpacing(20)
+
+        # 添加主题色三角按钮
+        self.triangle_button = QPushButton("")
+        self.triangle_button.setObjectName("triangle_button")
+        self.triangle_button.setFixedSize(60, 60)  # 稍微增大尺寸
+        self.triangle_button.setToolTip("批量生成脚本")  # 添加工具提示
+        self.triangle_button.clicked.connect(self.on_triangle_button_clicked)
+        # 初始化按钮样式
+        self.update_triangle_button_style()
+
+        button_layout.addWidget(self.triangle_button)
         button_layout.addStretch()
 
         left_layout.addLayout(button_layout)
@@ -271,13 +286,7 @@ class ModernInterface(QMainWindow):
                 "checkboxes": {},
                 "slider_value": self.slider.value() if self.slider else 4,
                 "slider_checkbox": self.slider_checkbox.isChecked() if self.slider_checkbox else False,
-                "slider_values": getattr(self, 'slider_values', {}),
-                "window_geometry": {
-                    "x": self.x(),
-                    "y": self.y(),
-                    "width": self.width(),
-                    "height": self.height()
-                }
+                "slider_values": getattr(self, 'slider_values', {})
             }
 
             # 保存下拉框的当前选择
@@ -339,10 +348,6 @@ class ModernInterface(QMainWindow):
             if "slider_values" in settings:
                 self.slider_values = settings["slider_values"]
 
-            # 恢复窗口大小和位置
-            if "window_geometry" in settings:
-                geo = settings["window_geometry"]
-                self.setGeometry(geo["x"], geo["y"], geo["width"], geo["height"])
 
             print(f"设置已从 {self.settings_file} 加载")
 
@@ -410,6 +415,9 @@ class ModernInterface(QMainWindow):
         self.current_theme = theme_name
         self.setStyleSheet(self.get_stylesheet())
         self.update_theme_button_states()
+        # 更新三角按钮样式
+        if hasattr(self, 'triangle_button'):
+            self.update_triangle_button_style()
 
         # 更新按钮样式（如果slider checkbox被选中）
         if hasattr(self, 'slider_checkbox') and self.slider_checkbox.isChecked():
@@ -456,93 +464,12 @@ class ModernInterface(QMainWindow):
         self.is_batch_running = True
         self.current_batch_index = 0
 
-        # 创建批量模式的总文件夹
-        self.batch_parent_dir = self._create_batch_parent_dir()
-        if not self.batch_parent_dir:
-            self.finish_batch_generation()
-            return
-
         # 禁用按钮防止重复点击
         self.generate_button.setEnabled(False)
 
         # 开始第一次生成
         self.generate_batch_step()
 
-    def _create_batch_parent_dir(self):
-        """为批量运行创建总文件夹"""
-        try:
-            # 收集UI配置来生成文件夹名
-            config = {}
-            for label_text, dropdown in self.dropdowns.items():
-                config[label_text.replace(":", "").strip()] = dropdown.currentText()
-
-            # 收集复选框状态
-            checkbox_config = {}
-            for label_text, checkbox in self.checkboxes.items():
-                checkbox_config[label_text.replace(":", "").strip()] = checkbox.isChecked()
-
-            # 提取关键参数
-            cell_type = config.get('Cell type', 'Cubic')
-            cell_size = config.get('Cell size', '5')
-            cell_radius = config.get('Strut radius', '0.5')
-
-            # 确定速度和方向设置
-            speed_value = None
-            direction_value = None
-
-            if checkbox_config.get('Speed', False):
-                speed_value = config.get('Speed', 'low')
-            if checkbox_config.get('Directions', False):
-                direction_value = config.get('Directions', 'X')
-
-            # 生成总文件夹名（不包含slider值）
-            from script_generator import AbaqusScriptGenerator
-            generator = AbaqusScriptGenerator()
-
-            # 清理cell_type，移除特殊字符
-            import re
-            clean_cell_type = re.sub(r'[^\w-]', '', cell_type)
-
-            # 处理数值
-            size_str = str(int(float(cell_size))) if float(cell_size).is_integer() else str(cell_size)
-            radius_str = str(cell_radius).rstrip('0').rstrip('.')
-
-            # 确定后缀
-            if speed_value is not None:
-                suffix = f"_{speed_value}"
-            elif direction_value is not None:
-                suffix = f"_{direction_value}"
-            else:
-                suffix = "_static"
-
-            parent_folder_name = f"{clean_cell_type}_{size_str}_{radius_str}{suffix}"
-
-            # 创建总文件夹路径
-            import os
-            import sys
-            if getattr(sys, 'frozen', False):
-                current_dir = os.path.dirname(sys.executable)
-            else:
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-
-            generate_script_dir = os.path.join(current_dir, "generate_script")
-            batch_parent_dir = os.path.join(generate_script_dir, parent_folder_name)
-
-            # 确保总文件夹存在
-            if not os.path.exists(batch_parent_dir):
-                os.makedirs(batch_parent_dir)
-
-                # 在批量文件夹中也创建执行器脚本
-                from script_generator import AbaqusScriptGenerator
-                generator = AbaqusScriptGenerator()
-                generator.create_batch_executor(batch_parent_dir)
-
-            print(f"创建批量运行总文件夹: {batch_parent_dir}")
-            return batch_parent_dir
-
-        except Exception as e:
-            print(f"创建批量运行总文件夹失败: {str(e)}")
-            return None
 
     def generate_batch_step(self):
         """执行连续运行的单步操作"""
@@ -687,7 +614,7 @@ class ModernInterface(QMainWindow):
             )
 
             if success:
-                self.generate_button.setText(f"生成成功: {filename}")
+                self.generate_button.setText(f"Down! {filename}")
                 print(f"脚本生成成功: {filename}")
             else:
                 self.generate_button.setText("生成失败!")
@@ -706,6 +633,152 @@ class ModernInterface(QMainWindow):
             self.generate_button.setText("Generate Script")
             self.generate_button.setEnabled(True)
 
+    def on_triangle_button_clicked(self):
+        """红色三角按钮点击事件处理 - 批量生成脚本"""
+        print("开始批量生成脚本...")
+
+        # 动态导入避免循环依赖
+        try:
+            import main
+            clear_generated_files = main.clear_generated_files
+            generate_shell_script = main.generate_shell_script
+            get_generated_files = main.get_generated_files
+        except ImportError as e:
+            print(f"无法导入main模块: {e}")
+            return
+
+        # 定义Cell Type分组
+        cell_type_groups = [
+            ("Group 1-4", ["Cubic", "BCC", "BCCZ", "Octet_truss"]),
+            ("Group 5-7", ["AFCC", "Truncated_cube", "FCC"]),
+            ("Group 8-10", ["FCCZ", "Tetrahedron_base", "Iso_truss"]),
+            ("Group 11-13", ["G7", "FBCCZ", "FBCCXYZ"]),
+            ("Group 14-16", ["Cuboctahedron_Z", "Diamond", "Rhombic"]),
+            ("Group 17-20", ["Kelvin", "Auxetic", "Octahedron", "Truncated_Octoctahedron"])
+        ]
+
+        # 无slider功能的cell types
+        no_slider_types = ["Cubic", "Octahedron"]
+
+        try:
+            # 禁用按钮防止重复点击
+            self.triangle_button.setEnabled(False)
+
+            total_groups = len(cell_type_groups)
+            current_group = 0
+
+            for group_name, cell_types in cell_type_groups:
+                current_group += 1
+                print(f"\n=== 处理 {group_name} ({current_group}/{total_groups}) ===")
+
+                # 清空文件追踪列表
+                clear_generated_files()
+
+                for cell_type in cell_types:
+                    print(f"正在处理 Cell Type: {cell_type}")
+
+                    # 设置当前cell type
+                    if "Cell type :" in self.dropdowns:
+                        dropdown = self.dropdowns["Cell type :"]
+                        index = dropdown.findText(cell_type)
+                        if index >= 0:
+                            dropdown.setCurrentIndex(index)
+
+                    if cell_type in no_slider_types:
+                        # 只生成1个脚本
+                        self._generate_single_script(cell_type, 4)  # 使用默认slider值4
+                    else:
+                        # 生成9个脚本 (slider值 0-8)
+                        for slider_value in range(9):
+                            self._generate_single_script(cell_type, slider_value)
+
+                # 生成当前组的批处理脚本
+                python_files = get_generated_files()
+                if python_files:
+                    print(f"{group_name} 共生成 {len(python_files)} 个脚本文件")
+
+                    # 获取输出目录
+                    if python_files:
+                        output_dir = os.path.dirname(python_files[0])
+
+                        # 检测操作系统并生成相应的脚本
+                        import platform
+                        if platform.system() == "Windows":
+                            generate_shell_script(python_files, output_dir, "bat")
+                        else:
+                            generate_shell_script(python_files, output_dir, "sh")
+                            generate_shell_script(python_files, output_dir, "bat")
+
+                        print(f"{group_name} 批处理脚本生成完成")
+                else:
+                    print(f"警告: {group_name} 未生成任何脚本文件")
+
+            print("\n=== 所有批处理脚本生成完成! ===")
+
+            # 生成主控制脚本
+            self.generate_master_control_script()
+
+            # 清理历史文件追踪
+            clear_generated_files()
+            print("已清理文件追踪历史")
+
+        except Exception as e:
+            print(f"批量生成脚本时出错: {str(e)}")
+        finally:
+            # 显示完成星星特效
+            self.show_completion_star()
+            # 重新启用按钮
+            self.triangle_button.setEnabled(True)
+
+    def _generate_single_script(self, cell_type, slider_value):
+        """生成单个脚本的辅助函数"""
+        try:
+            # 收集当前配置
+            config = {}
+            for label_text, dropdown in self.dropdowns.items():
+                config[label_text.replace(":", "").strip()] = dropdown.currentText()
+
+            # 收集复选框状态
+            checkbox_config = {}
+            for label_text, checkbox in self.checkboxes.items():
+                checkbox_config[label_text.replace(":", "").strip()] = checkbox.isChecked()
+
+            # 使用传入的参数覆盖cell_type
+            config['Cell type'] = cell_type
+
+            # 提取参数
+            cell_size = config.get('Cell size', '5')
+            cell_radius = config.get('Strut radius', '0.5')
+
+            # 确定速度和方向设置
+            speed_value = None
+            direction_value = None
+            if checkbox_config.get('Speed', False):
+                speed_value = config.get('Speed', '10')
+            if checkbox_config.get('Directions', False):
+                direction_value = config.get('Directions', 'X')
+
+            # 生成脚本
+            success, message, filename = generate_abaqus_script(
+                cell_type=cell_type,
+                cell_size=float(cell_size),
+                cell_radius=float(cell_radius),
+                slider=slider_value,
+                speed_value=speed_value,
+                direction_value=direction_value
+            )
+
+            if success:
+                print(f"  ✓ 生成成功: {filename}")
+            else:
+                print(f"  ✗ 生成失败: {message}")
+
+            return success
+
+        except Exception as e:
+            print(f"  ✗ 生成脚本时出错: {str(e)}")
+            return False
+
     def on_speed_direction_checkbox_changed(self, checked, label):
         """Handle mutual exclusion between Speed and Directions checkboxes and update label colors"""
         if checked:
@@ -719,8 +792,16 @@ class ModernInterface(QMainWindow):
             if label_text in self.checkbox_labels:
                 checkbox = self.checkboxes.get(label_text)
                 if checkbox and checkbox.isChecked():
-                    # Checkbox is checked - set label color to black
-                    self.checkbox_labels[label_text].setStyleSheet("color: #2c3e50; font-size: 27px; font-weight: 600; padding: 8px 0;")
+                    # Checkbox is checked - set label color to appropriate theme color
+                    if self.current_theme == "forest":
+                        color = "#e8f5e8"
+                    elif self.current_theme == "sunset":
+                        color = "#fff3e0"
+                    elif self.current_theme == "space":
+                        color = "#ecf0f1"
+                    else:
+                        color = "#2c3e50"
+                    self.checkbox_labels[label_text].setStyleSheet(f"color: {color}; font-size: 27px; font-weight: 600; padding: 8px 0;")
                 else:
                     # Checkbox is unchecked - set label color to gray
                     self.checkbox_labels[label_text].setStyleSheet("color: #95a5a6; font-size: 27px; font-weight: 600; padding: 8px 0;")
@@ -786,6 +867,356 @@ class ModernInterface(QMainWindow):
 
                 # Store current cell type for next time
                 self.previous_cell_type = cell_type
+
+    def update_triangle_button_style(self):
+        """更新三角按钮样式以匹配当前主题"""
+        if self.current_theme == "forest":
+            # 绿色主题
+            style = """
+                #triangle_button {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #4caf50, stop:0.5 #2e7d32, stop:1 #1b5e20);
+                    color: white;
+                    border: 2px solid #66bb6a;
+                    border-radius: 30px;
+                    font-size: 24px;
+                    font-weight: bold;
+                    text-align: center;
+                    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+                }
+                #triangle_button:hover {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #66bb6a, stop:0.5 #43a047, stop:1 #2e7d32);
+                    border: 2px solid #81c784;
+                    transform: scale(1.05);
+                }
+                #triangle_button:pressed {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #2e7d32, stop:0.5 #1b5e20, stop:1 #0d4b0b);
+                    border: 2px solid #4caf50;
+                    transform: scale(0.95);
+                }
+            """
+        elif self.current_theme == "sunset":
+            # 紫红色主题
+            style = """
+                #triangle_button {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #ff4444, stop:0.5 #cc0000, stop:1 #990000);
+                    color: white;
+                    border: 2px solid #ff6666;
+                    border-radius: 30px;
+                    font-size: 24px;
+                    font-weight: bold;
+                    text-align: center;
+                    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+                }
+                #triangle_button:hover {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #ff6666, stop:0.5 #dd2222, stop:1 #aa1111);
+                    border: 2px solid #ff8888;
+                    transform: scale(1.05);
+                }
+                #triangle_button:pressed {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #cc2222, stop:0.5 #990000, stop:1 #660000);
+                    border: 2px solid #cc4444;
+                    transform: scale(0.95);
+                }
+            """
+        else:  # space theme
+            # 蓝色主题
+            style = """
+                #triangle_button {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #3498db, stop:0.5 #2980b9, stop:1 #1f5f8a);
+                    color: white;
+                    border: 2px solid #5dade2;
+                    border-radius: 30px;
+                    font-size: 24px;
+                    font-weight: bold;
+                    text-align: center;
+                    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+                }
+                #triangle_button:hover {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #5dade2, stop:0.5 #3498db, stop:1 #2980b9);
+                    border: 2px solid #85c1e9;
+                    transform: scale(1.05);
+                }
+                #triangle_button:pressed {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #2980b9, stop:0.5 #1f5f8a, stop:1 #154d6b);
+                    border: 2px solid #3498db;
+                    transform: scale(0.95);
+                }
+            """
+
+        self.triangle_button.setStyleSheet(style)
+
+    def show_completion_star(self):
+        """显示完成星星特效"""
+        # 显示星星
+        self.triangle_button.setText("🌟")
+
+        # 设置星星样式
+        star_style = """
+            #triangle_button {
+                background: qlinear-gradient(45deg, #ffd700, #ffed4e, #ffd700);
+                color: #333;
+                border: 3px solid #ffd700;
+                border-radius: 30px;
+                font-size: 32px;
+                font-weight: bold;
+                text-align: center;
+                box-shadow: 0 0 15px #ffd700;
+            }
+        """
+        self.triangle_button.setStyleSheet(star_style)
+
+        # 3秒后恢复正常样式
+        QTimer.singleShot(3000, self.restore_triangle_button_style)
+
+    def restore_triangle_button_style(self):
+        """恢复三角按钮正常样式"""
+        self.triangle_button.setText("")
+        self.update_triangle_button_style()
+
+    def generate_master_control_script(self):
+        """生成主控制脚本用于并行计算"""
+        try:
+            from datetime import datetime
+
+            # 获取输出目录（使用generate_script文件夹）
+            output_dir = os.path.join(os.path.dirname(__file__), "generate_script")
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # 生成Linux并行脚本
+            self.create_linux_parallel_script(output_dir, timestamp)
+
+            # 生成Windows并行脚本
+            self.create_windows_parallel_script(output_dir, timestamp)
+
+            print(f"主控制脚本已生成在: {output_dir}")
+
+        except Exception as e:
+            print(f"生成主控制脚本时出错: {str(e)}")
+
+    def create_linux_parallel_script(self, output_dir, timestamp):
+        """创建Linux并行执行脚本"""
+        # tmux版本
+        tmux_script_path = os.path.join(output_dir, f"run_parallel_tmux_{timestamp}.sh")
+        tmux_content = """#!/bin/bash
+# 并行执行批处理脚本 - tmux版本
+echo "启动并行计算 - 使用tmux多窗格监控"
+
+# 检查tmux是否安装
+if ! command -v tmux &> /dev/null; then
+    echo "错误: tmux未安装，请先安装tmux或使用简单并行版本"
+    exit 1
+fi
+
+# 查找所有批处理脚本
+batch_files=($(ls run_all_scripts_*.sh 2>/dev/null))
+
+if [ ${#batch_files[@]} -eq 0 ]; then
+    echo "未找到批处理脚本文件"
+    exit 1
+fi
+
+echo "找到 ${#batch_files[@]} 个批处理脚本"
+
+# 创建tmux会话
+session_name="abaqus_parallel_$(date +%s)"
+tmux new-session -d -s "$session_name"
+
+# 根据脚本数量创建窗格
+for i in $(seq 1 $((${#batch_files[@]} - 1))); do
+    if [ $i -eq 1 ] || [ $i -eq 3 ] || [ $i -eq 5 ]; then
+        tmux split-window -h
+    else
+        tmux split-window -v
+    fi
+    if [ $i -gt 1 ]; then
+        tmux select-pane -t $(($i - 1))
+    fi
+done
+
+# 在每个窗格中运行批处理脚本
+for i in "${!batch_files[@]}"; do
+    echo "启动窗格 $i: ${batch_files[$i]}"
+    tmux send-keys -t "$i" "cd $(pwd) && chmod +x ${batch_files[$i]} && ./${batch_files[$i]}" Enter
+done
+
+echo "所有任务已启动"
+echo "使用以下命令监控进度:"
+echo "  tmux attach-session -t $session_name"
+echo "使用 Ctrl+B 然后 D 来分离会话"
+echo "使用以下命令终止所有任务:"
+echo "  tmux kill-session -t $session_name"
+"""
+
+        # 简单并行版本
+        simple_script_path = os.path.join(output_dir, f"run_parallel_simple_{timestamp}.sh")
+        simple_content = """#!/bin/bash
+# 并行执行批处理脚本 - 简单版本
+echo "启动并行计算 - 带日志监控"
+
+# 创建日志目录
+log_dir="./logs/$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$log_dir"
+echo "日志将保存到: $log_dir"
+
+# 查找所有批处理脚本
+batch_files=($(ls run_all_scripts_*.sh 2>/dev/null))
+
+if [ ${#batch_files[@]} -eq 0 ]; then
+    echo "未找到批处理脚本文件"
+    exit 1
+fi
+
+echo "找到 ${#batch_files[@]} 个批处理脚本，开始并行执行..."
+
+# 启动所有批处理脚本
+pids=()
+for i in "${!batch_files[@]}"; do
+    script="${batch_files[$i]}"
+    log_file="$log_dir/batch_$(($i + 1)).log"
+    echo "启动 $script -> $log_file"
+
+    chmod +x "$script"
+    ./"$script" > "$log_file" 2>&1 &
+    pids+=($!)
+done
+
+# 监控进度
+echo ""
+echo "监控任务进度 (Ctrl+C 停止监控，不会停止后台任务)..."
+while true; do
+    running=0
+    for pid in "${pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            running=$((running + 1))
+        fi
+    done
+
+    if [ $running -eq 0 ]; then
+        echo "所有任务已完成！"
+        break
+    fi
+
+    echo "$(date '+%H:%M:%S') - 运行中的任务: $running/${#batch_files[@]}"
+    sleep 10
+done
+
+echo ""
+echo "所有批处理任务已完成"
+echo "日志文件位置: $log_dir"
+echo "检查各任务完成情况:"
+for i in "${!batch_files[@]}"; do
+    log_file="$log_dir/batch_$(($i + 1)).log"
+    if [ -f "$log_file" ]; then
+        echo "  批次 $(($i + 1)): $(tail -n 1 "$log_file" | grep -o 'completed\\|failed\\|ERROR' || echo '进行中')"
+    fi
+done
+"""
+
+        # 写入脚本文件
+        with open(tmux_script_path, 'w', encoding='utf-8') as f:
+            f.write(tmux_content)
+
+        with open(simple_script_path, 'w', encoding='utf-8') as f:
+            f.write(simple_content)
+
+        # 设置执行权限
+        import stat
+        os.chmod(tmux_script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IROTH)
+        os.chmod(simple_script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IROTH)
+
+        print(f"Linux并行脚本已生成:")
+        print(f"  tmux版本: {os.path.basename(tmux_script_path)}")
+        print(f"  简单版本: {os.path.basename(simple_script_path)}")
+
+    def create_windows_parallel_script(self, output_dir, timestamp):
+        """创建Windows并行执行脚本"""
+        script_path = os.path.join(output_dir, f"run_parallel_{timestamp}.bat")
+
+        content = """@echo off
+setlocal enabledelayedexpansion
+
+echo 启动并行计算 - Windows版本
+
+rem 创建日志目录
+set "log_dir=logs\\%date:~0,4%%date:~5,2%%date:~8,2%_%time:~0,2%%time:~3,2%%time:~6,2%"
+set "log_dir=%log_dir: =0%"
+mkdir "%log_dir%" 2>nul
+echo 日志将保存到: %log_dir%
+
+rem 查找所有批处理脚本
+set batch_count=0
+for %%f in (run_all_scripts_*.bat) do (
+    set /a batch_count+=1
+    set "batch_file[!batch_count!]=%%f"
+)
+
+if %batch_count%==0 (
+    echo 未找到批处理脚本文件
+    pause
+    exit /b 1
+)
+
+echo 找到 %batch_count% 个批处理脚本，开始并行执行...
+
+rem 启动所有批处理脚本
+for /l %%i in (1,1,%batch_count%) do (
+    set "script=!batch_file[%%i]!"
+    set "log_file=%log_dir%\\batch_%%i.log"
+    echo 启动 !script! -^> !log_file!
+    start "Batch_%%i" /min cmd /c "!script! > !log_file! 2>&1"
+)
+
+echo.
+echo 所有任务已启动，正在监控进度...
+echo 使用任务管理器可以查看 cmd.exe 进程状态
+echo.
+
+rem 简单监控（检查窗口）
+:monitor
+timeout /t 10 >nul
+set running=0
+
+rem 检查是否还有批处理进程在运行
+tasklist /fi "windowtitle eq Batch_*" 2>nul | find /i "cmd.exe" >nul
+if %errorlevel%==0 (
+    echo %time% - 还有批处理任务在运行中...
+    goto monitor
+)
+
+echo.
+echo 所有批处理任务已完成！
+echo 日志文件位置: %log_dir%
+echo.
+echo 检查各任务完成情况:
+for /l %%i in (1,1,%batch_count%) do (
+    set "log_file=%log_dir%\\batch_%%i.log"
+    if exist "!log_file!" (
+        echo   批次 %%i: 检查日志文件 !log_file!
+    )
+)
+
+echo.
+echo 按任意键退出...
+pause
+"""
+
+        # 写入脚本文件
+        with open(script_path, 'w', encoding='ascii', errors='ignore') as f:
+            f.write(content)
+
+        print(f"Windows并行脚本已生成: {os.path.basename(script_path)}")
 
     def update_button_style(self, checked):
         """Update generate button style when slider checkbox state changes"""
@@ -861,7 +1292,6 @@ class ModernInterface(QMainWindow):
 
             #forest_theme_btn[active="true"] {
                 border: 3px solid #ff8a80;
-                box-shadow: 0 0 15px rgba(255, 138, 128, 0.4);
             }
 
             #sunset_theme_btn {
@@ -879,7 +1309,6 @@ class ModernInterface(QMainWindow):
 
             #sunset_theme_btn[active="true"] {
                 border: 3px solid #ff8a80;
-                box-shadow: 0 0 20px rgba(255, 20, 147, 0.8);
             }
 
             #space_theme_btn {
@@ -896,14 +1325,12 @@ class ModernInterface(QMainWindow):
 
             #space_theme_btn[active="true"] {
                 border: 3px solid #ff8a80;
-                box-shadow: 0 0 15px rgba(255, 138, 128, 0.4);
             }
 
             #title {
                 font-size: 48px;
                 font-weight: bold;
                 color: #fff3e0;
-                text-shadow: 0 0 25px #ff4500;
                 padding: 30px;
                 margin-bottom: 15px;
             }
@@ -921,7 +1348,6 @@ class ModernInterface(QMainWindow):
                 font-weight: 600;
                 color: #fff3e0;
                 padding: 8px 0;
-                text-shadow: 0 0 12px #ff4500;
             }
 
             #dropdown {
@@ -938,7 +1364,6 @@ class ModernInterface(QMainWindow):
             #dropdown:hover {
                 border-color: #ff4081;
                 background: rgba(74, 14, 78, 0.9);
-                box-shadow: 0 0 15px rgba(255, 64, 129, 0.4);
             }
 
             #dropdown QAbstractItemView {
@@ -966,7 +1391,6 @@ class ModernInterface(QMainWindow):
             #generate_button:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                     stop:0 #ff8a65, stop:1 #ab47bc);
-                box-shadow: 0 0 20px rgba(255, 20, 147, 0.6);
             }
 
             #checkbox::indicator {
@@ -1028,7 +1452,6 @@ class ModernInterface(QMainWindow):
 
             #forest_theme_btn[active="true"] {
                 border: 3px solid #81c784;
-                box-shadow: 0 0 15px rgba(76, 175, 80, 0.6);
             }
 
             #sunset_theme_btn {
@@ -1045,7 +1468,6 @@ class ModernInterface(QMainWindow):
 
             #sunset_theme_btn[active="true"] {
                 border: 3px solid #81c784;
-                box-shadow: 0 0 15px rgba(76, 175, 80, 0.4);
             }
 
             #space_theme_btn {
@@ -1062,14 +1484,12 @@ class ModernInterface(QMainWindow):
 
             #space_theme_btn[active="true"] {
                 border: 3px solid #81c784;
-                box-shadow: 0 0 15px rgba(76, 175, 80, 0.4);
             }
 
             #title {
                 font-size: 48px;
                 font-weight: bold;
                 color: #e8f5e8;
-                text-shadow: 0 0 20px #4caf50;
                 padding: 30px;
                 margin-bottom: 15px;
             }
@@ -1103,7 +1523,6 @@ class ModernInterface(QMainWindow):
             #dropdown:hover {
                 border-color: #4caf50;
                 background: rgba(27, 94, 32, 0.9);
-                box-shadow: 0 0 10px rgba(76, 175, 80, 0.3);
             }
 
             #dropdown QAbstractItemView {
@@ -1131,7 +1550,6 @@ class ModernInterface(QMainWindow):
             #generate_button:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                     stop:0 #66bb6a, stop:1 #43a047);
-                box-shadow: 0 0 15px rgba(76, 175, 80, 0.4);
             }
 
             #checkbox::indicator {
@@ -1192,7 +1610,6 @@ class ModernInterface(QMainWindow):
 
             #cyberpunk_theme_btn[active="true"] {
                 border: 3px solid #3498db;
-                box-shadow: 0 0 15px rgba(52, 152, 219, 0.4);
             }
 
             #minimal_theme_btn {
@@ -1207,7 +1624,6 @@ class ModernInterface(QMainWindow):
 
             #minimal_theme_btn[active="true"] {
                 border: 3px solid #3498db;
-                box-shadow: 0 0 15px rgba(52, 152, 219, 0.4);
             }
 
             #space_theme_btn {
@@ -1224,7 +1640,6 @@ class ModernInterface(QMainWindow):
 
             #space_theme_btn[active="true"] {
                 border: 3px solid #ecf0f1;
-                box-shadow: 0 0 15px rgba(52, 152, 219, 0.6);
             }
 
             QMenuBar {
@@ -1259,7 +1674,6 @@ class ModernInterface(QMainWindow):
                 font-size: 48px;
                 font-weight: bold;
                 color: #ecf0f1;
-                text-shadow: 0 0 20px #3498db;
                 padding: 30px;
                 margin-bottom: 15px;
             }
@@ -1293,7 +1707,6 @@ class ModernInterface(QMainWindow):
             #dropdown:hover {
                 border-color: #3498db;
                 background: rgba(44, 62, 80, 1.0);
-                box-shadow: 0 0 10px rgba(52, 152, 219, 0.3);
             }
 
             #dropdown QAbstractItemView {
@@ -1321,7 +1734,6 @@ class ModernInterface(QMainWindow):
             #generate_button:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                     stop:0 #5dade2, stop:1 #3498db);
-                box-shadow: 0 0 15px rgba(52, 152, 219, 0.4);
             }
 
             #checkbox::indicator {

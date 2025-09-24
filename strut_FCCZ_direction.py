@@ -272,8 +272,8 @@ def Macro1():
     a.regenerate()
 
     # === 分析步 ===
-    mdb.models['Model-1'].StaticStep(name='Step-1', previous='Initial', 
-        initialInc=0.01, minInc=1e-06, nlgeom=ON)
+    mdb.models['Model-1'].StaticStep(name='Step-1', previous='Initial', timePeriod=0.2,
+        initialInc=0.002, minInc=1e-06, nlgeom=ON)
 
     # === 定义反射点集 ===
     v1 = a.instances['MergedStructure-1'].vertices
@@ -590,17 +590,9 @@ mdb.models['Model-1'].boundaryConditions['BC-2'].setValuesInStep(
 
 mdb.models['Model-1'].boundaryConditions['BC-2'].setValues(u1=SET,u2=SET, u3=UNSET)
 
-mdb.models['Model-1'].fieldOutputRequests['F-Output-1'].setValues(frequency=5)
+# mdb.models['Model-1'].fieldOutputRequests['F-Output-1'].setValues(frequency=5)
+#
 
 
-mdb.Job(name='Job-1', model='Model-1', description='', type=ANALYSIS, 
-    atTime=None, waitMinutes=0, waitHours=0, queue=None, memory=90, 
-    memoryUnits=PERCENTAGE, getMemoryFromAnalysis=True, 
-    explicitPrecision=SINGLE, nodalOutputPrecision=SINGLE, echoPrint=OFF, 
-    modelPrint=OFF, contactPrint=OFF, historyPrint=OFF, userSubroutine='', 
-    scratch='', resultsFormat=ODB, numThreadsPerMpiProcess=0, numCpus=10, 
-    numDomains=10, numGPUs=0)
 
-mdb.jobs['Job-1'].setValues(directory="C:\Users\\21202\Desktop")
-mdb.jobs['Job-1'].submit(consistencyChecking=OFF)
 

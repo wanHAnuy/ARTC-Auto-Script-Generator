@@ -17,6 +17,11 @@ class AbaqusScriptGenerator:
         self.base_template_file_direction = 'strut_FCCZ_direction.py'
         self.base_cell_size = 5.0  # 原始模板的单元尺寸
         # self.macro_integrator = MacroIntegrator()  # 宏集成器
+        self._file_tracker_callback = None  # 文件追踪回调函数
+
+    def set_file_tracker_callback(self, callback):
+        """设置文件追踪回调函数"""
+        self._file_tracker_callback = callback
 
     def generate_script(self, cell_type, cell_size, cell_radius, slider=4, output_dir=None, speed_value=None, direction_value=None, batch_mode=False, batch_parent_dir=None):
         """
@@ -63,6 +68,8 @@ class AbaqusScriptGenerator:
                 template_content, structure_data, cell_size, cell_radius, slider, speed_value, direction_value, output_dir
             )
 
+            
+
             # 5. 生成文件名和保存
             filename = self._generate_filename(cell_type, cell_size, cell_radius, slider, speed_value, direction_value)
             filepath = os.path.join(output_dir, filename)
@@ -70,6 +77,13 @@ class AbaqusScriptGenerator:
             # 使用UTF-8编码并添加BOM以确保兼容性
             with open(filepath, 'w', encoding='utf-8-sig') as f:
                 f.write(script_content)
+
+            # 将生成的文件添加到追踪列表
+            if hasattr(self, '_file_tracker_callback') and self._file_tracker_callback:
+                try:
+                    self._file_tracker_callback(filepath)
+                except Exception as e:
+                    print(f"Warning: 无法添加文件到追踪列表: {e}")
 
             return True, f"脚本生成成功: {filename}", filename
 
@@ -137,8 +151,8 @@ class AbaqusScriptGenerator:
         # 第4层: clean_cell_type_size_radius_suffix
         level4 = f"{clean_cell_type}_{size_str}_{radius_str}_{suffix}"
 
-        # 第5层: clean_cell_type_size_radius_slider_suffix
-        level5 = f"{clean_cell_type}_{size_str}_{radius_str}_{slider}_{suffix}"
+        # 第5层: clean_cell_type_size_radius_slider (不包含suffix，避免与文件名冲突)
+        level5 = f"{clean_cell_type}_{size_str}_{radius_str}_{slider}"
 
         # 组装完整路径
         full_path = os.path.join(base_dir, level1, level2, level3, level4, level5)
@@ -278,9 +292,7 @@ class AbaqusScriptGenerator:
         rigid_body_code = self._generate_rigid_body_detection(structure_data, cell_size)
         content = self._insert_rigid_body_detection(content, rigid_body_code)
 
-        # 7. 集成宏功能（新增）
-        content = self._integrate_macro_functionality(content, cell_size, cell_radius, slider, speed_value, direction_value)
-
+        
         # 8. 替换velocity2参数（当使用动态模板时）
         if speed_value is not None:
             content = self._replace_velocity_parameters(content, speed_value)
@@ -290,53 +302,161 @@ class AbaqusScriptGenerator:
             content = self._replace_direction_parameters(content, direction_value)
 
         # 10. 设置作业文件保存路径到脚本文件同级目录
-        content = self._set_job_directory(content, output_dir)
+        # content = self._set_job_directory(content, output_dir)
+
+        # 11. 追加作业设置、提交和等待语句
+        content = self._append_job_settings(content, output_dir, cell_size, speed_value, direction_value)
 
         return content
 
-    def _set_job_directory(self, content, output_dir=None):
-        """设置作业文件保存路径到脚本文件同级目录"""
-        try:
-            # 使用脚本文件的输出目录作为作业文件保存路径
-            if output_dir:
-                job_directory = output_dir.replace('\\', '/')
-            else:
-                # 如果没有指定输出目录，使用默认的generate_script根目录
-                if getattr(sys, 'frozen', False):
-                    # 打包环境：获取可执行文件所在目录
-                    current_dir = os.path.dirname(sys.executable)
-                else:
-                    # 开发环境：获取脚本文件所在目录
-                    current_dir = os.path.dirname(os.path.abspath(__file__))
+    def _determine_script_type(self, speed_value, direction_value):
+        """确定脚本类型"""
+        if direction_value is not None:
+            return "direction"
+        elif speed_value is not None:
+            return "speed"
+        else:
+            return "static"
 
-                job_directory = os.path.join(current_dir, "generate_script").replace('\\', '/')
+    def _get_output_variable_names(self, script_type):
+        """根据脚本类型获取对应的outputVariableName"""
+        output_variables = {
+            "static": {
+                "force": "Reaction force: RF2 PI: RIGIDPLATE-2 Node 122 in NSET TOPREFLECTION",
+                "displacement": "Spatial displacement: U2 PI: RIGIDPLATE-2 Node 122 in NSET TOPREFLECTION"
+            },
+            "speed": {
+                "force": "Reaction force: RF3 PI: RIGIDPLATE-1 Node 122 in NSET BOTREFLECTION",
+                "displacement": "Spatial displacement: U2 PI: MERGEDSTRUCTURE-1 Node 149 in NSET REFLECTION"
+            },
+            "direction": {
+                "force": "Reaction force: RF2 PI: RIGIDPLATE-2 Node 122 in NSET TOPREFLECTION",
+                "displacement": "Spatial displacement: U2 PI: RIGIDPLATE-2 Node 122 in NSET TOPREFLECTION"
+            },
+        }
+        return output_variables.get(script_type, output_variables["static"])
 
-            # 查找现有的setValues调用并替换，如果没有则在submit前添加
-            import re
+    def _append_job_settings(self, content, output_dir, cell_size, speed_value=None, direction_value=None):
+        """在 content 末尾追加 Job 设置、提交和等待语句"""
+        import os
+        job_name = os.path.basename(output_dir).replace('.', 'p')
 
-            # 先尝试替换现有的setValues调用
-            pattern = r"mdb\.jobs\['Job-1'\]\.setValues\([^)]*directory\s*=\s*['\"][^'\"]*['\"][^)]*\)"
-            replacement = f"mdb.jobs['Job-1'].setValues(directory='{job_directory}')"
+        # 生成odb文件路径：与脚本文件路径一致，只是后缀改为.odb
+        odb_path = os.path.join(output_dir, f"{job_name}.odb")
 
-            if re.search(pattern, content):
-                content = re.sub(pattern, replacement, content)
-            else:
-                # 如果没有现有的setValues调用，在submit前添加新的
-                submit_pattern = r"(mdb\.jobs\['Job-1'\]\.submit\(consistencyChecking=OFF\))"
-                submit_replacement = f"mdb.jobs['Job-1'].setValues(directory='{job_directory}')\n\\1"
+        # 确定脚本类型并获取对应的outputVariableName
+        script_type = self._determine_script_type(speed_value, direction_value)
+        output_vars = self._get_output_variable_names(script_type)
 
-                if re.search(submit_pattern, content):
-                    content = re.sub(submit_pattern, submit_replacement, content)
-                else:
-                    # 如果连submit都没有，在文件末尾添加
-                    content += f"\nmdb.jobs['Job-1'].setValues(directory='{job_directory}')\nmdb.jobs['Job-1'].submit(consistencyChecking=OFF)\n"
+        addition = f"""
 
-            print(f"设置作业文件保存目录: {job_directory}")
-            return content
+a = mdb.models['Model-1'].rootAssembly
+a.regenerate()
 
-        except Exception as e:
-            print(f"设置作业目录时出错: {str(e)}")
-            return content
+os.chdir(r"{output_dir}")
+
+mdb.models['Model-1'].fieldOutputRequests['F-Output-1'].setValues(numIntervals=60)
+
+mdb.Job(name='{job_name}', model='Model-1', description='', type=ANALYSIS,
+    atTime=None, waitMinutes=0, waitHours=0, queue=None, memory=90,
+    memoryUnits=PERCENTAGE, getMemoryFromAnalysis=True,
+    explicitPrecision=SINGLE, nodalOutputPrecision=SINGLE, echoPrint=ON,
+    modelPrint=ON, contactPrint=ON, historyPrint=ON, userSubroutine='',
+    scratch='', resultsFormat=ODB, numThreadsPerMpiProcess=0, numCpus=8,
+    numDomains=8, numGPUs=0)
+
+mdb.jobs['{job_name}'].submit(consistencyChecking=OFF)
+mdb.jobs['{job_name}'].waitForCompletion()
+
+
+import xyPlot
+import os
+
+odb_filename = r'{odb_path}'
+odb = session.openOdb(name=odb_filename)
+
+# 提取数据
+xy_force = xyPlot.XYDataFromHistory(odb=odb,
+    outputVariableName='{output_vars["force"]}',
+    steps=('Step-1', ), suppressQuery=True)
+
+xy_disp = xyPlot.XYDataFromHistory(odb=odb,
+    outputVariableName='{output_vars["displacement"]}',
+    steps=('Step-1', ), suppressQuery=True)
+
+xy_combined = combine(abs(xy_disp),abs(xy_force))
+
+model = mdb.models['Model-1']
+part  = model.parts['MergedStructure']
+
+# 计算几何体积
+volume = part.getVolume()
+print("MergedStructure 体积 =", volume)
+
+# 计算密度 = 体积/size的三次方
+cell_size = {cell_size}
+density = volume / (cell_size ** 3)
+print("密度 (density) =", density)
+
+# 提取xy_combined数据进行SEA/Strength计算
+displacement_data = []
+force_data = []
+for i in range(len(xy_combined)):
+    displacement_data.append(xy_combined[i][0])
+    force_data.append(xy_combined[i][1])
+
+# 计算strength/SEA
+speed_enabled = {repr(speed_value)} is not None
+if speed_enabled:
+    # 计算SEA = Total_Energy_Absorbed / Structure_Mass
+    # Total_Energy_Absorbed是在displacement达到最大值之前F对D的积分
+    max_displacement = max(displacement_data)
+
+    # 找到达到最大displacement的索引
+    max_disp_index = displacement_data.index(max_displacement)
+
+    # 截取到最大displacement的数据
+    disp_to_max = displacement_data[:max_disp_index+1]
+    force_to_max = force_data[:max_disp_index+1]
+
+    # 使用梯形法则计算积分 (Total_Energy_Absorbed)
+    total_energy_absorbed = 0.0
+    for i in range(len(disp_to_max)-1):
+        # 梯形面积 = (f1 + f2) * (x2 - x1) / 2
+        area = (force_to_max[i] + force_to_max[i+1]) * (disp_to_max[i+1] - disp_to_max[i]) / 2.0
+        total_energy_absorbed += area
+
+    # Structure_Mass = 1.2e-09 * volume
+    structure_mass = 1.2e-09 * volume
+
+    # SEA = Total_Energy_Absorbed / Structure_Mass
+    sea_value = total_energy_absorbed / structure_mass
+    feature_value = "SEA: " + str(sea_value)
+    print("SEA =", sea_value)
+else:
+    # 计算strength (max value point of xy_combined)
+    strength_value = max(force_data)
+    feature_value = "Strength: " + str(strength_value)
+    print("Strength =", strength_value)
+
+# 保存为txt文件，按照新格式输出
+with open('feature_data.txt', 'w') as f:
+    f.write("{job_name}\\n")
+    f.write(feature_value + "\\n")
+    f.write("density: " + str(density) + "\\n")
+    f.write("F_D curve:\\n")
+
+# 然后追加xy_combined数据
+session.writeXYReport(fileName='feature_data.txt', xyData=(xy_combined, ), appendMode=ON)
+
+
+# 关闭ODB
+odb.close()
+
+"""
+        return content.rstrip() + addition
+
+
 
     def _replace_velocity_parameters(self, content, speed_value):
         """替换velocity2参数，根据speed_value调整速度值"""
@@ -657,44 +777,6 @@ class AbaqusScriptGenerator:
 
         return content
 
-    def _integrate_macro_functionality(self, content, cell_size=None, cell_radius=None, slider=4, speed_value=None, direction_value=None):
-        """集成宏功能到脚本中"""
-        try:
-            # 获取当前结构类型
-            structure_type = getattr(self, '_current_structure_name', 'Unknown')
-
-            # 如果结构类型未知或不支持，跳过宏集成
-            # if structure_type == 'Unknown' or not self.macro_integrator.is_structure_supported(structure_type):
-            #     print(f"Warning: Structure type '{structure_type}' not supported for macro integration")
-            #     return content
-
-            # 根据GUI选项更新MacroIntegrator设置
-            # gui_speed_on = speed_value is not None
-            # direction_enabled = direction_value is not None
-            # self.macro_integrator.update_gui_options(gui_speed_on=gui_speed_on, direction_enabled=direction_enabled)
-
-            # 获取对应的宏内容（传入条件判断所需的参数）
-            # macro_content = self.macro_integrator.get_macro_content(structure_type, cell_size, cell_radius, slider)
-
-            # 宏集成功能已禁用，直接返回原内容
-            return content
-
-            # if not macro_content:
-            #     print(f"Warning: No macro content found for structure type '{structure_type}'")
-            #     return content
-
-            # # 在脚本末尾添加宏功能 - 简化版本
-            # separator = f"\n\n# Macro functions for {structure_type} structure\n"
-
-            # # 拼接内容
-            # integrated_content = content + separator + macro_content
-
-            # print(f"Successfully integrated macro functionality for {structure_type} structure")
-            # return integrated_content
-
-        except Exception as e:
-            print(f"Warning: Error integrating macro functionality: {e}")
-            return content
 
     def _generate_filename(self, cell_type, cell_size, cell_radius, slider, speed_value=None, direction_value=None):
         """生成文件名"""
@@ -715,147 +797,6 @@ class AbaqusScriptGenerator:
 
         return f"{clean_cell_type}_{size_str}_{radius_str}_{slider}{suffix}.py"
 
-    def create_batch_executor(self, output_dir):
-        """创建批量执行器脚本"""
-        executor_content = '''#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-Abaqus脚本批量执行器
-自动遍历当前目录及所有子目录下的.py文件并执行
-"""
-
-import os
-import sys
-import subprocess
-import time
-from pathlib import Path
-
-def find_all_python_scripts(root_dir):
-    """查找所有Python脚本文件"""
-    python_files = []
-
-    # 遍历所有子目录
-    for root, dirs, files in os.walk(root_dir):
-        for file in files:
-            if file.endswith('.py') and file != 'run_all_scripts.py':  # 排除自身
-                file_path = os.path.join(root, file)
-                python_files.append(file_path)
-
-    return sorted(python_files)
-
-def execute_abaqus_script(script_path):
-    """执行单个Abaqus脚本"""
-    print(f"\\n{'='*60}")
-    print(f"正在执行: {script_path}")
-    print(f"{'='*60}")
-
-    try:
-        # 切换到脚本所在目录
-        script_dir = os.path.dirname(script_path)
-        script_name = os.path.basename(script_path)
-
-        # 使用Abaqus CAE执行脚本
-        cmd = f'abaqus cae noGUI={script_name}'
-
-        print(f"执行命令: {cmd}")
-        print(f"工作目录: {script_dir}")
-
-        # 执行命令
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=script_dir,
-            capture_output=True,
-            text=True,
-            timeout=3600  # 1小时超时
-        )
-
-        if result.returncode == 0:
-            print(f"✓ 执行成功: {script_path}")
-            return True
-        else:
-            print(f"✗ 执行失败: {script_path}")
-            print(f"错误信息: {result.stderr}")
-            return False
-
-    except subprocess.TimeoutExpired:
-        print(f"✗ 执行超时: {script_path}")
-        return False
-    except Exception as e:
-        print(f"✗ 执行出错: {script_path}")
-        print(f"错误信息: {str(e)}")
-        return False
-
-def main():
-    """主函数"""
-    print("Abaqus脚本批量执行器")
-    print("="*60)
-
-    # 获取当前目录
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    print(f"搜索目录: {current_dir}")
-
-    # 查找所有Python脚本
-    python_scripts = find_all_python_scripts(current_dir)
-
-    if not python_scripts:
-        print("未找到任何Python脚本文件")
-        return
-
-    print(f"\\n找到 {len(python_scripts)} 个Python脚本文件:")
-    for i, script in enumerate(python_scripts, 1):
-        rel_path = os.path.relpath(script, current_dir)
-        print(f"  {i}. {rel_path}")
-
-    # 询问用户是否继续
-    response = input(f"\\n是否执行所有 {len(python_scripts)} 个脚本? (y/N): ")
-    if response.lower() not in ['y', 'yes', '是']:
-        print("执行已取消")
-        return
-
-    # 执行统计
-    success_count = 0
-    failed_count = 0
-    start_time = time.time()
-
-    # 逐个执行脚本
-    for i, script_path in enumerate(python_scripts, 1):
-        rel_path = os.path.relpath(script_path, current_dir)
-        print(f"\\n[{i}/{len(python_scripts)}] 执行脚本: {rel_path}")
-
-        if execute_abaqus_script(script_path):
-            success_count += 1
-        else:
-            failed_count += 1
-
-        # 脚本间间隔
-        if i < len(python_scripts):
-            print("等待5秒后执行下一个脚本...")
-            time.sleep(5)
-
-    # 执行总结
-    end_time = time.time()
-    total_time = end_time - start_time
-
-    print(f"\\n{'='*60}")
-    print("执行完成!")
-    print(f"总脚本数: {len(python_scripts)}")
-    print(f"成功执行: {success_count}")
-    print(f"执行失败: {failed_count}")
-    print(f"总耗时: {total_time:.2f} 秒")
-    print(f"{'='*60}")
-
-if __name__ == "__main__":
-    main()
-'''
-
-        # 保存执行器脚本
-        executor_path = os.path.join(output_dir, "run_all_scripts.py")
-        with open(executor_path, 'w', encoding='utf-8') as f:
-            f.write(executor_content)
-
-        print(f"已创建批量执行器脚本: {executor_path}")
-        return executor_path
 
 
 def generate_abaqus_script(cell_type, cell_size, cell_radius, slider=4, output_dir=None, speed_value=None, direction_value=None, batch_mode=False, batch_parent_dir=None):
@@ -877,6 +818,21 @@ def generate_abaqus_script(cell_type, cell_size, cell_radius, slider=4, output_d
     - (success: bool, message: str, filename: str)
     """
     generator = AbaqusScriptGenerator()
+
+    # 尝试设置文件追踪回调
+    try:
+        import sys
+        # 尝试多种可能的模块名称
+        main_module = None
+        for module_name in ['main', '__main__']:
+            if module_name in sys.modules:
+                main_module = sys.modules[module_name]
+                if hasattr(main_module, 'add_generated_file'):
+                    generator.set_file_tracker_callback(main_module.add_generated_file)
+                    break
+    except Exception:
+        pass  # 静默失败，不影响脚本生成
+
     return generator.generate_script(cell_type, cell_size, cell_radius, slider, output_dir, speed_value, direction_value, batch_mode, batch_parent_dir)
 
 
