@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.ico" alt="ARTC Logo" width="128" height="128">
+  <img src="logo.ico" alt="ARTC Logo" width="32" height="32">
 
   # 🚀 ARTC Auto_script
 
@@ -12,6 +12,12 @@
   **基于 Abaqus 的智能化有限元分析工具链 🔬**
 
   支持 20 种晶胞结构 | 三阶段执行流程 | 跨平台批处理 | 集群调度集成
+
+  ---
+
+  <img src="mainpage.png" alt="主界面预览" width="800">
+
+  *图：ARTC Auto_script 主界面 - 可视化配置界面*
 
 </div>
 
@@ -671,8 +677,6 @@ python main.py
 ```
 
 ### 4. GUI 操作流程
-
-![GUI 主界面](mainpage.png)
 
 1. 在主界面选择晶胞类型（如 BCC）
 2. 设置参数：
