@@ -8,7 +8,7 @@ with open('feature_data.json', 'r', encoding='utf-8') as f:
     data = json.load(f)
 
 # 获取第一个样本
-first_sample_name = list(data.keys())[6]
+first_sample_name = list(data.keys())[1]
 sample_data = data[first_sample_name]
 
 print(f"\n{'='*70}")

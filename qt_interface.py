@@ -700,10 +700,39 @@ class ModernInterface(QMainWindow):
             """
             self.triangle_button.setStyleSheet(running_style)
 
-            # 创建带时间戳的任务文件夹
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # 创建基于配置参数的任务文件夹
+            # 获取配置参数用于文件夹命名
+            cell_size = self.dropdowns.get("Cell size:", None)
+            strut_radius = self.dropdowns.get("Strut radius:", None)
+            speed_checkbox = self.checkboxes.get("Speed:", None)
+            direction_checkbox = self.checkboxes.get("Directions:", None)
+            direction_dropdown = self.dropdowns.get("Directions:", None)
+
+            # 构建文件夹名称
+            folder_parts = []
+            if cell_size:
+                folder_parts.append(cell_size.currentText())
+            if strut_radius:
+                folder_parts.append(strut_radius.currentText())
+
+            # 添加类型标识 (static/speed/direction)
+            if speed_checkbox and speed_checkbox.isChecked():
+                if direction_checkbox and direction_checkbox.isChecked():
+                    # 如果启用了方向，添加方向信息
+                    if direction_dropdown:
+                        direction = direction_dropdown.currentText()
+                        folder_parts.append(f"{direction}_500")
+                    else:
+                        folder_parts.append("dir_500")
+                else:
+                    folder_parts.append("speed_500")
+            else:
+                folder_parts.append("static")
+
+            folder_name = "_".join(folder_parts) if folder_parts else f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
             generate_script_root = os.path.join(os.path.dirname(__file__), "generate_script")
-            task_dir = os.path.join(generate_script_root, f"task_{timestamp}")
+            task_dir = os.path.join(generate_script_root, folder_name)
             os.makedirs(task_dir, exist_ok=True)
             print(f"创建任务文件夹: {task_dir}")
 

@@ -409,31 +409,30 @@ instance = a.instances['MergedStructure-1']
 faces = instance.faces
 
 top_faces = []
-for i in range(len(faces)):
-    face = faces[i]
+for face in faces:
     try:
         normal = face.getNormal()
         if (abs(normal[0]) < 0.01 and
             abs(normal[1] - 1.0) < 0.01 and
             abs(normal[2]) < 0.01):
-            top_faces.append(i)
+            top_faces.append(face)
     except:
         pass
 
 if top_faces:
-    mask_value_top = 0
-    for i in top_faces:
-        mask_value_top += 1 << i
-
     # 定义主面：顶部刚性板
     s1 = a.instances['RigidPlate-2'].faces
     side1Faces1 = s1.getSequenceFromMask(mask=('[#1]',))
     region1 = a.Surface(side1Faces=side1Faces1, name='m_Surf-Tie-Top')
 
-    # 定义从面：结构顶部
+    # 定义从面：结构顶部（使用findAt重新获取face对象）
     s1 = a.instances['MergedStructure-1'].faces
-    side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value_top,))
-    region2 = a.Surface(side1Faces=side1Faces1, name='s_Surf-Tie-Top')
+    found_faces = []
+    for face in top_faces:
+        face_center = face.pointOn[0]
+        found_face = s1.findAt((face_center,))
+        found_faces.append(found_face)
+    region2 = a.Surface(side1Faces=tuple(found_faces), name='s_Surf-Tie-Top')
 
     # 创建Tie约束
     mdb.models['Model-1'].Tie(

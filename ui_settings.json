@@ -2,20 +2,20 @@
   "theme": "space",
   "dropdowns": {
     "Cell type :": "Truncated_Octoctahedron",
-    "Speed:": "50",
+    "Speed:": "500",
     "Directions:": "X_500",
     "Cell size:": "4",
-    "Strut radius:": "0.3"
+    "Strut radius:": "0.5"
   },
   "checkboxes": {
     "Speed:": false,
     "Directions:": true
   },
-  "slider_value": 4,
+  "slider_value": 0,
   "slider_checkbox": false,
   "slider_values": {
     "Cubic": 4,
-    "Truncated_Octoctahedron": 4,
+    "Truncated_Octoctahedron": 0,
     "BCC": 4,
     "AFCC": 4,
     "BCCZ": 4,
