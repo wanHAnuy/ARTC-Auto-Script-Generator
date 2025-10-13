@@ -1,38 +1,40 @@
 {
-  "theme": "forest",
+  "theme": "space",
   "dropdowns": {
     "Cell type :": "Truncated_Octoctahedron",
-    "Speed:": "100",
-    "Directions:": "Z",
-    "Cell size:": "5",
-    "Strut radius:": "0.35"
+    "Speed:": "50",
+    "Directions:": "X_500",
+    "Cell size:": "4",
+    "Strut radius:": "0.3"
   },
   "checkboxes": {
     "Speed:": false,
-    "Directions:": false
+    "Directions:": true
   },
-  "slider_value": 6,
+  "slider_value": 4,
   "slider_checkbox": false,
   "slider_values": {
-    "Cubic": 6,
+    "Cubic": 4,
+    "Truncated_Octoctahedron": 4,
     "BCC": 4,
-    "FCCZ": 8,
-    "Truncated_cube": 8,
-    "Tetrahedron_base": 8,
-    "Iso_truss": 8,
-    "G7": 8,
-    "FBCCZ": 8,
-    "FBCCXYZ": 8,
-    "Cuboctahedron_Z": 8,
-    "Diamond": 8,
-    "Rhombic": 8,
-    "Kelvin": 8,
-    "Auxetic": 8,
-    "AFCC": 8,
-    "Truncated_Octoctahedron": 6,
+    "AFCC": 4,
     "BCCZ": 4,
     "Octet_truss": 4,
-    "FCC": 8,
-    "Octahedron": 8
-  }
+    "Truncated_cube": 4,
+    "FCC": 4,
+    "FCCZ": 4,
+    "Tetrahedron_base": 4,
+    "Iso_truss": 4,
+    "G7": 4,
+    "FBCCZ": 4,
+    "FBCCXYZ": 4,
+    "Cuboctahedron_Z": 4,
+    "Diamond": 4,
+    "Rhombic": 4,
+    "Kelvin": 4,
+    "Auxetic": 4,
+    "Octahedron": 4
+  },
+  "batch_enabled": false,
+  "batch_config": {}
 }

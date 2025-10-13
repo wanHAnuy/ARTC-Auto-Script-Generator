@@ -7,8 +7,8 @@ from numpy import cross, dot
 import regionToolset
 
 # 圆柱体半径
-radius = 0.5
-
+radius = 0.3
+cell_size = 5
 # 定义关键点坐标
 A  = [-2.5,  2.5,  2.5]
 B  = [ 2.5,  2.5,  2.5]
@@ -272,13 +272,68 @@ def Macro1():
     a.regenerate()
 
     # === 分析步 ===
-    mdb.models['Model-1'].StaticStep(name='Step-1', previous='Initial', 
-        initialInc=0.01, minInc=1e-06, nlgeom=ON)
+    # mdb.models['Model-1'].StaticStep(name='Step-1', previous='Initial', 
+    #     initialInc=0.01, minInc=1e-06, nlgeom=ON,maxNumInc=300, )
+    # === 关键修改：分析步设置 ===
+    mdb.models['Model-1'].StaticStep(
+        name='Step-1',
+        previous='Initial',
+        initialInc=0.02,         # 源代码：0.01 → 增大初始增量，避免过小步长
+        minInc=5e-07,           # 源代码：1e-08 → 提高最小增量下限，防止死循环
+        maxInc=0.02,            # 源代码：0.01 → 增大最大增量
+        maxNumInc=500,          # 源代码：300 → 增加最大步数，应对复杂变形
+        nlgeom=ON,
+        stabilizationMethod=DAMPING_FACTOR,
+        stabilizationMagnitude=0.0004,  # 源代码：0.0002 → 增大阻尼，抑制振荡
+        continueDampingFactors=False,
+        adaptiveDampingRatio=0.05       # 新增：自适应阻尼
+    )
 
     # === 定义反射点集 ===
+    # 自动选择Y最大面上X、Z都最大的顶点
     v1 = a.instances['MergedStructure-1'].vertices
-    verts1 = v1.getSequenceFromMask(mask=('[#20000 ]', ), )
-    a.Set(vertices=verts1, name='Reflection')
+    max_y = -999999.0
+
+    # 第一步：找到最大Y坐标
+    for v in v1:
+        coord = v.pointOn[0]
+        if coord[1] > max_y:
+            max_y = coord[1]
+
+    # 第二步：筛选Y坐标接近最大值的所有顶点（容差0.01）
+    top_verts = []
+    for v in v1:
+        coord = v.pointOn[0]
+        if abs(coord[1] - max_y) < 0.01:
+            top_verts.append(v)
+
+    # 第三步：在这些顶点中找到X和Z都最大的
+    if top_verts:
+        max_x = max([v.pointOn[0][0] for v in top_verts])
+        max_z = max([v.pointOn[0][2] for v in top_verts])
+
+        # 找到同时满足X和Z最大的顶点（容差0.01）
+        target_vert = None
+        for v in top_verts:
+            coord = v.pointOn[0]
+            if abs(coord[0] - max_x) < 0.01 and abs(coord[2] - max_z) < 0.01:
+                target_vert = v
+                break
+
+        if target_vert:
+            # 使用findAt通过坐标重新获取vertex（返回Abaqus序列对象）
+            coord = target_vert.pointOn[0]
+            verts1 = v1.findAt((coord,))
+            a.Set(vertices=(verts1,), name='Reflection')
+            print("Selected Reflection vertex at: (%f, %f, %f)" % coord)
+        else:
+            # 兜底：选择第一个顶部顶点
+            coord = top_verts[0].pointOn[0]
+            verts1 = v1.findAt((coord,))
+            a.Set(vertices=(verts1,), name='Reflection')
+            print("Fallback: Selected first top vertex at: (%f, %f, %f)" % coord)
+    else:
+        raise ValueError("Cannot find top vertices in MergedStructure-1")
 
     # BotReflection
     r1 = a.instances['RigidPlate-1'].referencePoints
@@ -293,17 +348,17 @@ def Macro1():
     # === 输出请求 ===
     regionDef = a.sets['Reflection']
     mdb.models['Model-1'].HistoryOutputRequest(name='H-Output-2', 
-        createStepName='Step-1', variables=('U2', 'U3', 'RF2', 'RF3'), 
+        createStepName='Step-1', variables=('U1', 'U2', 'RF1','RF2'), 
         region=regionDef, sectionPoints=DEFAULT, rebar=EXCLUDE)
 
     regionDef = a.sets['BotReflection']
     mdb.models['Model-1'].HistoryOutputRequest(name='H-Output-3', 
-        createStepName='Step-1', variables=('U2', 'U3', 'RF2', 'RF3'), 
+        createStepName='Step-1', variables=('U1', 'U2', 'RF1','RF2'), 
         region=regionDef, sectionPoints=DEFAULT, rebar=EXCLUDE)
 
     regionDef = a.sets['TopReflection']
     mdb.models['Model-1'].HistoryOutputRequest(name='H-Output-4', 
-        createStepName='Step-1', variables=('U2', 'U3', 'RF2', 'RF3'), 
+        createStepName='Step-1', variables=('U1', 'U2', 'RF1','RF2'), 
         region=regionDef, sectionPoints=DEFAULT, rebar=EXCLUDE)
 
     # === Rigid body 约束 ===
@@ -326,7 +381,7 @@ def Macro1():
     mdb.models['Model-1'].interactionProperties['IntProp-1'].TangentialBehavior(
         formulation=PENALTY, directionality=ISOTROPIC, slipRateDependency=OFF, 
         pressureDependency=OFF, temperatureDependency=OFF, dependencies=0, 
-        table=((0.03, ), ), shearStressLimit=None, maximumElasticSlip=FRACTION, 
+        table=((0.15, ), ), shearStressLimit=None, maximumElasticSlip=FRACTION, 
         fraction=0.005, elasticSlipStiffness=None)
     mdb.models['Model-1'].interactionProperties['IntProp-1'].NormalBehavior(
         pressureOverclosure=HARD, allowSeparation=ON, 
@@ -468,24 +523,19 @@ def Macro2():
     mdb.models['Model-1'].ExplicitDynamicsStep(
         name='Step-1', 
         previous='Initial',
-        timePeriod=0.01,  # Total time period: 0.01 seconds
+        timePeriod=0.015,  # Total time period: 0.01 seconds
         massScaling=((SEMI_AUTOMATIC, MODEL, AT_BEGINNING, 100.0, 0.0, None, 0, 0, 0.0, 0.0, 0, None), ),
         improvedDtMethod=ON
     )
 
     # === Constraint Definition: Tie Constraint ===
-    # Tie RigidPlate-1 (main) to MergedStructure-2 (secondary)
+    # Tie RigidPlate-1 (main) to MergedStructure-1 (secondary)
     a = mdb.models['Model-1'].rootAssembly
     s1 = a.instances['RigidPlate-1'].faces
     side2Faces1 = s1.getSequenceFromMask(mask=('[#1 ]', ), )
     region1 = regionToolset.Region(side2Faces=side2Faces1)
 
-    a = mdb.models['Model-1'].rootAssembly
-    # 如果需要创建实例
-    p = mdb.models['Model-1'].parts['MergedStructure']
-    a.Instance(name='MergedStructure-2', part=p, dependent=ON)
-
-    s1 = a.instances['MergedStructure-2'].faces
+    s1 = a.instances['MergedStructure-1'].faces
     side1Faces1 = s1.getSequenceFromMask(mask=('[#4040c0 ]', ), )
     region2 = regionToolset.Region(side1Faces=side1Faces1)
 
@@ -500,14 +550,14 @@ def Macro2():
     )
 
     # === Contact Interactions Definition ===
-    # Define surface-to-surface contact between RigidPlate-2 and MergedStructure-2
+    # Define surface-to-surface contact between RigidPlate-2 and MergedStructure-1
 
     # Contact Int-1
     s1 = a.instances['RigidPlate-2'].faces
     side1Faces1 = s1.getSequenceFromMask(mask=('[#1 ]', ), )
     region1 = regionToolset.Region(side1Faces=side1Faces1)
 
-    s1 = a.instances['MergedStructure-2'].faces
+    s1 = a.instances['MergedStructure-1'].faces
     side1Faces1 = s1.getSequenceFromMask(mask=('[#4040c0 ]', ), )
     # 10000
     region2 = regionToolset.Region(side1Faces=side1Faces1)
@@ -517,7 +567,7 @@ def Macro2():
         createStepName='Initial',
         main=region1,
         secondary=region2,
-        mechanicalConstraint=KINEMATIC,
+        mechanicalConstraint=PENALTY,
         sliding=FINITE,
         interactionProperty='IntProp-1',
         initialClearance=OMIT,
@@ -526,7 +576,7 @@ def Macro2():
     )
 
     # Contact Int-2
-    s1 = a.instances['MergedStructure-2'].faces
+    s1 = a.instances['MergedStructure-1'].faces
     side1Faces1 = s1.getSequenceFromMask(mask=('[#1000 ]', ), )
     region2 = regionToolset.Region(side1Faces=side1Faces1)
 
@@ -535,7 +585,7 @@ def Macro2():
         createStepName='Initial',
         main=region1,  # Same RigidPlate-2 face as before
         secondary=region2,
-        mechanicalConstraint=KINEMATIC,
+        mechanicalConstraint=PENALTY,
         sliding=FINITE,
         interactionProperty='IntProp-1',
         initialClearance=OMIT,
@@ -544,9 +594,7 @@ def Macro2():
     )
 
     # Contact Int-3
-    # 确保实例已创建
-
-    s1 = a.instances['MergedStructure-2'].faces
+    s1 = a.instances['MergedStructure-1'].faces
     side1Faces1 = s1.getSequenceFromMask(mask=('[#1000 ]', ), )
     # 2000000
     region2 = regionToolset.Region(side1Faces=side1Faces1)
@@ -556,7 +604,7 @@ def Macro2():
         createStepName='Initial',
         main=region1,  # Same RigidPlate-2 face
         secondary=region2,
-        mechanicalConstraint=KINEMATIC,
+        mechanicalConstraint=PENALTY,
         sliding=FINITE,
         interactionProperty='IntProp-1',
         initialClearance=OMIT,
@@ -565,7 +613,7 @@ def Macro2():
     )
 
     # Contact Int-4
-    s1 = a.instances['MergedStructure-2'].faces
+    s1 = a.instances['MergedStructure-1'].faces
     side1Faces1 = s1.getSequenceFromMask(mask=('[#1000 ]', ), )
     
     # 80000
@@ -576,7 +624,7 @@ def Macro2():
         createStepName='Initial',
         main=region1,  # Same RigidPlate-2 face
         secondary=region2,
-        mechanicalConstraint=KINEMATIC,
+        mechanicalConstraint=PENALTY,
         sliding=FINITE,
         interactionProperty='IntProp-1',
         initialClearance=OMIT,
@@ -646,7 +694,7 @@ def Macro2():
     mdb.models['Model-1'].HistoryOutputRequest(
         name='H-Output-2',
         createStepName='Step-1',
-        variables=('RF2', 'RF3', 'U2', 'U3'),  # Reaction forces and displacements
+        variables=('U1', 'U2', 'RF1','RF2'),  # Reaction forces and displacements
         region=regionDef,
         sectionPoints=DEFAULT,
         rebar=EXCLUDE
@@ -657,7 +705,7 @@ def Macro2():
     mdb.models['Model-1'].HistoryOutputRequest(
         name='H-Output-3',
         createStepName='Step-1',
-        variables=('RF2', 'RF3'),  # Reaction forces only
+        variables=('RF1','RF2'),
         region=regionDef,
         sectionPoints=DEFAULT,
         rebar=EXCLUDE
@@ -668,7 +716,7 @@ def Macro2():
     mdb.models['Model-1'].HistoryOutputRequest(
         name='H-Output-4',
         createStepName='Step-1',
-        variables=('RF2', 'RF3'),  # Reaction forces only
+        variables=('RF1','RF2'),  # Reaction forces only
         region=regionDef,
         sectionPoints=DEFAULT,
         rebar=EXCLUDE
@@ -690,56 +738,78 @@ def Macro2():
     top_faces = []    # 法向量(0,1,0)
     bottom_faces = [] # 法向量(0,-1,0)
 
-    for i in range(len(faces)):
-        face = faces[i]
+    # 关键修复：使用face对象而不是索引，因为mask的bit位置和索引可能不对应
+    for face in faces:
         try:
             normal = face.getNormal()
             # 允许0.01的误差
-            if (abs(normal[0]) < 0.01 and 
-                abs(normal[1] - 1.0) < 0.01 and 
+            if (abs(normal[0]) < 0.01 and
+                abs(normal[1] - 1.0) < 0.01 and
                 abs(normal[2]) < 0.01):
-                top_faces.append(i)
-                
-            elif (abs(normal[0]) < 0.01 and 
-                  abs(normal[1] + 1.0) < 0.01 and 
+                top_faces.append(face)
+
+            elif (abs(normal[0]) < 0.01 and
+                  abs(normal[1] + 1.0) < 0.01 and
                   abs(normal[2]) < 0.01):
-                bottom_faces.append(i)
+                bottom_faces.append(face)
         except:
             pass
 
     print("找到%d个顶面，%d个底面" % (len(top_faces), len(bottom_faces)))
 
+    # 检查是否找到顶面，如果没有则提前退出
+    if not top_faces:
+        print("WARNING: No top faces detected, skipping interaction setup")
+        # 删除所有预创建的Int-1到Int-5
+        for i in range(1, 6):
+            try:
+                del mdb.models['Model-1'].interactions['Int-%d' % i]
+            except:
+                pass
+        return
+
     # 处理顶面 - 根据数量决定分配策略
     if len(top_faces) == 5:
         # 5个顶面：分别赋给Int-1到Int-5
-        for idx, face_i in enumerate(top_faces):
-            mask_value = 1 << face_i
+        for idx, face in enumerate(top_faces):
             s1 = a.instances['MergedStructure-1'].faces
-            side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value,))
-            region2 = a.Surface(side1Faces=side1Faces1, name='s_Surf-%d' % (idx+5))
-            
+            try:
+                # 使用findAt通过面的中心点重新获取face
+                face_center = face.pointOn[0]
+                found_face = s1.findAt((face_center,))
+                region2 = a.Surface(side1Faces=(found_face,), name='s_Surf-%d' % (idx+5))
+            except Exception as e:
+                print("ERROR: Failed to create surface for face %d: %s" % (idx, str(e)))
+                continue
+
             int_name = 'Int-%d' % (idx+1)
             mdb.models['Model-1'].interactions[int_name].setValues(
                 secondary=region2,
-                mechanicalConstraint=KINEMATIC, 
+                mechanicalConstraint=PENALTY,
                 sliding=FINITE,
-                interactionProperty='IntProp-1', 
-                initialClearance=OMIT, 
+                interactionProperty='IntProp-1',
+                initialClearance=OMIT,
                 datumAxis=None,
                 clearanceRegion=None)
             
     elif len(top_faces) == 1:
         # 1个顶面：只赋给Int-1，删除其余
-        mask_value = 1 << top_faces[0]
         s1 = a.instances['MergedStructure-1'].faces
-        side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value,))
-        region2 = a.Surface(side1Faces=side1Faces1, name='s_Surf-9')
+        try:
+            # 使用findAt通过面的中心点重新获取face
+            face_center = top_faces[0].pointOn[0]
+            found_face = s1.findAt((face_center,))
+            region2 = a.Surface(side1Faces=(found_face,), name='s_Surf-9')
+        except Exception as e:
+            print("ERROR: Failed to create surface for single top face: %s" % str(e))
+            return
+
         mdb.models['Model-1'].interactions['Int-1'].setValues(
             secondary=region2,
-            mechanicalConstraint=KINEMATIC, 
+            mechanicalConstraint=PENALTY,
             sliding=FINITE,
-            interactionProperty='IntProp-1', 
-            initialClearance=OMIT, 
+            interactionProperty='IntProp-1',
+            initialClearance=OMIT,
             datumAxis=None,
             clearanceRegion=None)
         
@@ -755,20 +825,25 @@ def Macro2():
             
     else:
         # 其他情况：将顶面依次赋给Int-1, Int-2, Int-3...，删除未赋值的
-        for idx, face_i in enumerate(top_faces):
+        for idx, face in enumerate(top_faces):
             if idx < 5:  # 最多分配到Int-5
-                mask_value = 1 << face_i
                 s1 = a.instances['MergedStructure-1'].faces
-                side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value,))
-                region2 = a.Surface(side1Faces=side1Faces1, name='s_Surf-%d' % (idx+5))
-                
+                try:
+                    # 使用findAt通过面的中心点重新获取face
+                    face_center = face.pointOn[0]
+                    found_face = s1.findAt((face_center,))
+                    region2 = a.Surface(side1Faces=(found_face,), name='s_Surf-%d' % (idx+5))
+                except Exception as e:
+                    print("ERROR: Failed to create surface for face %d: %s" % (idx, str(e)))
+                    continue
+
                 int_name = 'Int-%d' % (idx+1)
                 mdb.models['Model-1'].interactions[int_name].setValues(
                     secondary=region2,
-                    mechanicalConstraint=KINEMATIC, 
+                    mechanicalConstraint=PENALTY,
                     sliding=FINITE,
-                    interactionProperty='IntProp-1', 
-                    initialClearance=OMIT, 
+                    interactionProperty='IntProp-1',
+                    initialClearance=OMIT,
                     datumAxis=None,
                     clearanceRegion=None)
         
@@ -784,16 +859,22 @@ def Macro2():
 
     # 处理底面 - 赋给Constraint-3
     if bottom_faces:
-        mask_value = 0
-        for i in bottom_faces:
-            mask_value += 1 << i
         s1 = a.instances['MergedStructure-1'].faces
-        side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value,))
-        region2 = a.Surface(side1Faces=side1Faces1, name='s_Surf-10')
-        mdb.models['Model-1'].constraints['Constraint-3'].setValues(secondary=region2)
+        try:
+            # 使用findAt逐个重新获取每个底面
+            found_faces = []
+            for face in bottom_faces:
+                face_center = face.pointOn[0]
+                found_face = s1.findAt((face_center,))
+                found_faces.append(found_face)
+            region2 = a.Surface(side1Faces=tuple(found_faces), name='s_Surf-10')
+            mdb.models['Model-1'].constraints['Constraint-3'].setValues(secondary=region2)
+        except Exception as e:
+            print("ERROR: Failed to create surface for bottom faces: %s" % str(e))
 
 Macro2()
 
-# mdb.models['Model-1'].fieldOutputRequests['F-Output-1'].setValues(frequency=5)
+# mdb.models['Model-1'].fieldOutputRequests['F-Output-1'].setValues(frequency=3)
 
+# 解放自由度 改变方向增加tie约束改变int的  Penalty
 

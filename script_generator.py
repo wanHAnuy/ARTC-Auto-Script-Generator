@@ -6,22 +6,27 @@ Abaqus Script Generator
 import os
 import sys
 import re
+import platform
 from structure_set import get_crystal_structure
+
+
 # from macro_integration import MacroIntegrator
+
 
 
 class AbaqusScriptGenerator:
     def __init__(self):
         self.base_template_file_static = 'strut_FCCZ_static.py'
         self.base_template_file_dynamic = 'strut_FCCZ_Dynamic.py'
-        self.base_template_file_direction = 'strut_FCCZ_direction.py'
         self.base_cell_size = 5.0  # 原始模板的单元尺寸
         # self.macro_integrator = MacroIntegrator()  # 宏集成器
         self._file_tracker_callback = None  # 文件追踪回调函数
 
+
     def set_file_tracker_callback(self, callback):
         """设置文件追踪回调函数"""
         self._file_tracker_callback = callback
+
 
     def generate_script(self, cell_type, cell_size, cell_radius, slider=4, output_dir=None, speed_value=None, direction_value=None, batch_mode=False, batch_parent_dir=None):
         """
@@ -63,29 +68,49 @@ class AbaqusScriptGenerator:
             if not structure_data:
                 return False, f"不支持的结构类型: {cell_type}", ""
 
-            # 4. 生成脚本内容
+            # 4. 生成文件名
+            filename = self._generate_filename(cell_type, cell_size, cell_radius, slider, speed_value, direction_value)
+
+            # 5. 生成脚本内容
             script_content = self._generate_script_content(
-                template_content, structure_data, cell_size, cell_radius, slider, speed_value, direction_value, output_dir
+                template_content, structure_data, cell_size, cell_radius, slider, speed_value, direction_value, output_dir, filename
             )
 
-            
 
-            # 5. 生成文件名和保存
-            filename = self._generate_filename(cell_type, cell_size, cell_radius, slider, speed_value, direction_value)
-            filepath = os.path.join(output_dir, filename)
+
+            # 6. 保存前处理脚本
+            preprocess_filename = filename.replace('.py', '_preprocess.py')
+            preprocess_filepath = os.path.join(output_dir, preprocess_filename)
 
             # 使用UTF-8编码并添加BOM以确保兼容性
-            with open(filepath, 'w', encoding='utf-8-sig') as f:
+            with open(preprocess_filepath, 'w', encoding='utf-8-sig') as f:
                 f.write(script_content)
 
             # 将生成的文件添加到追踪列表
             if hasattr(self, '_file_tracker_callback') and self._file_tracker_callback:
                 try:
-                    self._file_tracker_callback(filepath)
+                    self._file_tracker_callback(preprocess_filepath)
                 except Exception as e:
                     print(f"Warning: 无法添加文件到追踪列表: {e}")
 
-            return True, f"脚本生成成功: {filename}", filename
+            # 7. 生成并保存后处理脚本
+            postprocess_content = self._generate_postprocess_script(
+                output_dir, cell_size, speed_value, direction_value, filename
+            )
+            postprocess_filename = filename.replace('.py', '_postprocess.py')
+            postprocess_filepath = os.path.join(output_dir, postprocess_filename)
+
+            with open(postprocess_filepath, 'w', encoding='utf-8-sig') as f:
+                f.write(postprocess_content)
+
+            # 将后处理文件也添加到追踪列表
+            if hasattr(self, '_file_tracker_callback') and self._file_tracker_callback:
+                try:
+                    self._file_tracker_callback(postprocess_filepath)
+                except Exception as e:
+                    print(f"Warning: 无法添加文件到追踪列表: {e}")
+
+            return True, f"脚本生成成功: {preprocess_filename} 和 {postprocess_filename}", filename
 
         except Exception as e:
             return False, f"生成脚本时出错: {str(e)}", ""
@@ -122,37 +147,47 @@ class AbaqusScriptGenerator:
     def _build_hierarchical_path(self, base_dir, cell_type, cell_size, cell_radius, slider, speed_value, direction_value):
         """
         构建层级路径结构
+        基础目录/
+        ├─ BCC/                          # level1: cell_type
+        │  ├─ 4/                         # level2: size
+        │  │  ├─ 0p3/                    # level3: radius (小数点替换为p)
+        │  │  │  ├─ 0/                   # level4: slider
+        │  │  │  │  ├─ static/           # level5: suffix
+        │  │  │  │  │  └─ BCC_4_0.3_0_static.py
         """
         # 清理cell_type，移除特殊字符
         clean_cell_type = re.sub(r'[^\w-]', '', cell_type)
 
         # 处理数值，移除不必要的小数点
         size_str = str(int(float(cell_size))) if float(cell_size).is_integer() else str(cell_size)
-        radius_str = str(cell_radius).rstrip('0').rstrip('.')
+        # radius目录名：将小数点替换为p
+        radius_dir_str = str(cell_radius).replace('.', 'p')
+        # slider目录名
+        slider_str = str(slider)
 
         # 确定后缀
         if speed_value is not None:
-            suffix = speed_value
+            suffix = str(speed_value)
         elif direction_value is not None:
-            suffix = direction_value
+            suffix = str(direction_value)
         else:
             suffix = "static"
 
         # 构建层级路径
-        # 第1层: clean_cell_type
+        # 第1层: cell_type
         level1 = clean_cell_type
 
-        # 第2层: clean_cell_type_suffix
-        level2 = f"{clean_cell_type}_{suffix}"
+        # 第2层: size
+        level2 = size_str
 
-        # 第3层: clean_cell_type_size_suffix
-        level3 = f"{clean_cell_type}_{size_str}_{suffix}"
+        # 第3层: radius (小数点替换为p)
+        level3 = radius_dir_str
 
-        # 第4层: clean_cell_type_size_radius_suffix
-        level4 = f"{clean_cell_type}_{size_str}_{radius_str}_{suffix}"
+        # 第4层: slider
+        level4 = slider_str
 
-        # 第5层: clean_cell_type_size_radius_slider (不包含suffix，避免与文件名冲突)
-        level5 = f"{clean_cell_type}_{size_str}_{radius_str}_{slider}"
+        # 第5层: suffix
+        level5 = suffix
 
         # 组装完整路径
         full_path = os.path.join(base_dir, level1, level2, level3, level4, level5)
@@ -184,7 +219,11 @@ class AbaqusScriptGenerator:
             # 根据复选框是否被选中来选择模板文件
             if direction_value is not None:
                 # Direction复选框被选中
-                template_file = self.base_template_file_direction
+                if direction_value == "X":
+                    # Z方向使用静态模板
+                    template_file = self.base_template_file_static
+                else:
+                    template_file = self.base_template_file_dynamic
                 print(f"Direction复选框已选中，使用方向模板: {template_file}")
             elif speed_value is not None:
                 # Speed复选框被选中
@@ -269,12 +308,15 @@ class AbaqusScriptGenerator:
 
         return {'coords': coords, 'cylinders': cylinders}
 
-    def _generate_script_content(self, template_content, structure_data, cell_size, cell_radius, slider=4, speed_value=None, direction_value=None, output_dir=None):
+    def _generate_script_content(self, template_content, structure_data, cell_size, cell_radius, slider=4, speed_value=None, direction_value=None, output_dir=None, script_filename=None):
         """生成最终的脚本内容"""
         content = template_content
 
         # 1. 替换半径参数
         content = self._replace_radius(content, cell_radius)
+
+        # 1.5. 替换模板开头的cell_size值
+        content = self._replace_template_cell_size(content, cell_size)
 
         # 2. 替换坐标定义
         content = self._replace_coordinates(content, structure_data['coords'], cell_size)
@@ -288,74 +330,138 @@ class AbaqusScriptGenerator:
         # 5. 替换钢板尺寸和位置（新增）
         content = self._replace_steel_plate_dimensions(content, cell_size)
 
-        # 6. 生成上下刚体识别代码
-        rigid_body_code = self._generate_rigid_body_detection(structure_data, cell_size)
-        content = self._insert_rigid_body_detection(content, rigid_body_code)
+        # # 6. 生成上下刚体识别代码
+        # rigid_body_code = self._generate_rigid_body_detection(structure_data, cell_size)
+        # content = self._insert_rigid_body_detection(content, rigid_body_code)
 
-        
+
         # 8. 替换velocity2参数（当使用动态模板时）
         if speed_value is not None:
             content = self._replace_velocity_parameters(content, speed_value)
 
-        # 9. 替换direction参数（当使用direction模板时）
-        if direction_value is not None:
-            content = self._replace_direction_parameters(content, direction_value)
 
         # 10. 设置作业文件保存路径到脚本文件同级目录
         # content = self._set_job_directory(content, output_dir)
 
         # 11. 追加作业设置、提交和等待语句
-        content = self._append_job_settings(content, output_dir, cell_size, speed_value, direction_value)
+        content = self._append_job_settings(content, output_dir, cell_size, speed_value, direction_value, script_filename)
 
         return content
 
-    def _determine_script_type(self, speed_value, direction_value):
-        """确定脚本类型"""
-        if direction_value is not None:
-            return "direction"
-        elif speed_value is not None:
-            return "speed"
-        else:
-            return "static"
+    # def _determine_script_type(self, speed_value, direction_value):
+    #     """确定脚本类型"""
+    #     if direction_value is not None:
+    #         return "direction"
+    #     elif speed_value is not None:
+    #         return "speed"
+    #     else:
+    #         return "static"
 
-    def _get_output_variable_names(self, script_type):
-        """根据脚本类型获取对应的outputVariableName"""
-        output_variables = {
-            "static": {
-                "force": "Reaction force: RF2 PI: RIGIDPLATE-2 Node 122 in NSET TOPREFLECTION",
-                "displacement": "Spatial displacement: U2 PI: RIGIDPLATE-2 Node 122 in NSET TOPREFLECTION"
-            },
-            "speed": {
-                "force": "Reaction force: RF3 PI: RIGIDPLATE-1 Node 122 in NSET BOTREFLECTION",
-                "displacement": "Spatial displacement: U2 PI: MERGEDSTRUCTURE-1 Node 149 in NSET REFLECTION"
-            },
-            "direction": {
-                "force": "Reaction force: RF2 PI: RIGIDPLATE-2 Node 122 in NSET TOPREFLECTION",
-                "displacement": "Spatial displacement: U2 PI: RIGIDPLATE-2 Node 122 in NSET TOPREFLECTION"
-            },
-        }
-        return output_variables.get(script_type, output_variables["static"])
-
-    def _append_job_settings(self, content, output_dir, cell_size, speed_value=None, direction_value=None):
-        """在 content 末尾追加 Job 设置、提交和等待语句"""
+    
+    def _append_job_settings(self, content, output_dir, cell_size, speed_value=None, direction_value=None, script_filename=None):
+        """在 content 末尾追加 Job 设置和提交语句（前处理脚本）"""
         import os
-        job_name = os.path.basename(output_dir).replace('.', 'p')
+        # 使用脚本文件名（去掉.py扩展名）作为job_name
+        if script_filename:
+            job_name = os.path.splitext(script_filename)[0]
+        else:
+            job_name = os.path.basename(output_dir).replace('.', 'p')
 
         # 生成odb文件路径：与脚本文件路径一致，只是后缀改为.odb
         odb_path = os.path.join(output_dir, f"{job_name}.odb")
 
-        # 确定脚本类型并获取对应的outputVariableName
-        script_type = self._determine_script_type(speed_value, direction_value)
-        output_vars = self._get_output_variable_names(script_type)
+        # # 确定脚本类型并获取对应的outputVariableName
+        # script_type = self._determine_script_type(speed_value, direction_value)
+
+   
+        # 如果是Direction模式且为X方向（static脚本基础），添加边界条件设置
+        bc_code = ""
+        if direction_value == "X":
+            bc_code = """
+mdb.models['Model-1'].boundaryConditions['BC-2'].setValues(u1=UNSET, u2=SET)
+
+mdb.models['Model-1'].boundaryConditions['BC-2'].setValuesInStep(
+    stepName='Step-1', u1=1.0, u2=0.0)
+
+"""
+        # 如果是Direction模式且为非X方向（dynamic脚本基础），添加速度场和边界条件设置
+        velocity_bc_code = ""
+        tie_constraint_code = ""
+        if direction_value and direction_value != "X":
+            # 从direction_value中提取速度值，如"X_100"提取100
+            velocity_val = direction_value.split('_')[1] if '_' in direction_value else "100"
+            velocity_bc_code = f"""
+# 设置初始速度场和边界条件
+mdb.models['Model-1'].predefinedFields['Predefined Field-1'].setValues(
+    velocity1={velocity_val}.0, velocity2=0.0, omega=0.0)
+
+mdb.models['Model-1'].boundaryConditions['BC-2'].setValuesInStep(
+    stepName='Step-1', u1=FREED, u2=0.0)
+"""
+
+        # 添加第四个Tie约束（所有顶面和顶部刚体连接）
+        # 只有当direction被选中且不为X时添加
+        
+            tie_constraint_code = """
+# 创建顶部Tie约束（Constraint-0）
+a = mdb.models['Model-1'].rootAssembly
+instance = a.instances['MergedStructure-1']
+faces = instance.faces
+
+top_faces = []
+for i in range(len(faces)):
+    face = faces[i]
+    try:
+        normal = face.getNormal()
+        if (abs(normal[0]) < 0.01 and
+            abs(normal[1] - 1.0) < 0.01 and
+            abs(normal[2]) < 0.01):
+            top_faces.append(i)
+    except:
+        pass
+
+if top_faces:
+    mask_value_top = 0
+    for i in top_faces:
+        mask_value_top += 1 << i
+
+    # 定义主面：顶部刚性板
+    s1 = a.instances['RigidPlate-2'].faces
+    side1Faces1 = s1.getSequenceFromMask(mask=('[#1]',))
+    region1 = a.Surface(side1Faces=side1Faces1, name='m_Surf-Tie-Top')
+
+    # 定义从面：结构顶部
+    s1 = a.instances['MergedStructure-1'].faces
+    side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value_top,))
+    region2 = a.Surface(side1Faces=side1Faces1, name='s_Surf-Tie-Top')
+
+    # 创建Tie约束
+    mdb.models['Model-1'].Tie(
+        name='Constraint-0',
+        main=region1,
+        secondary=region2,
+        positionToleranceMethod=COMPUTED,
+        adjust=ON,
+        tieRotations=ON,
+        thickness=ON
+    )
+"""
+
+        # 根据direction是否选中决定使用U1还是U2
+        if direction_value:
+            disp_var_name = "U1" 
+        else:
+            disp_var_name = "U2"  # 默认使用U2
 
         addition = f"""
-
-a = mdb.models['Model-1'].rootAssembly
-a.regenerate()
+{velocity_bc_code}
+{tie_constraint_code}
+# {bc_code}a = mdb.models['Model-1'].rootAssembly
+# a.regenerate()
 
 os.chdir(r"{output_dir}")
 
-mdb.models['Model-1'].fieldOutputRequests['F-Output-1'].setValues(numIntervals=60)
+# mdb.models['Model-1'].fieldOutputRequests['F-Output-1'].setValues(numIntervals=60)
 
 mdb.Job(name='{job_name}', model='Model-1', description='', type=ANALYSIS,
     atTime=None, waitMinutes=0, waitHours=0, queue=None, memory=90,
@@ -365,98 +471,368 @@ mdb.Job(name='{job_name}', model='Model-1', description='', type=ANALYSIS,
     scratch='', resultsFormat=ODB, numThreadsPerMpiProcess=0, numCpus=8,
     numDomains=8, numGPUs=0)
 
-mdb.jobs['{job_name}'].submit(consistencyChecking=OFF)
-mdb.jobs['{job_name}'].waitForCompletion()
+# 计算体积和密度，保存到文件供后处理使用
+try:
+    part = mdb.models['Model-1'].parts['MergedStructure']
+    volume = part.getVolume()
+    density = volume / ({cell_size} ** 3)
+    print("MergedStructure volume = ", volume)
+    print("Density = ", density)
 
+    # 保存到临时文件
+    with open('density_temp.txt', 'w') as f:
+        f.write(str(density))
+    print("Density saved to density_temp.txt")
+except Exception as e:
+    print("Warning: Cannot calculate density: " + str(e))
+    with open('density_temp.txt', 'w') as f:
+        f.write('0.0')
 
-import xyPlot
-import os
+# 生成 .inp 文件而不是直接提交
+print("Generating input file...")
+mdb.jobs['{job_name}'].writeInput(consistencyChecking=OFF)
+print("Input file '{job_name}.inp' generated successfully.")
+print("CAE will exit after script completion to release license.")
 
-odb_filename = r'{odb_path}'
-odb = session.openOdb(name=odb_filename)
-
-# 提取数据
-xy_force = xyPlot.XYDataFromHistory(odb=odb,
-    outputVariableName='{output_vars["force"]}',
-    steps=('Step-1', ), suppressQuery=True)
-
-xy_disp = xyPlot.XYDataFromHistory(odb=odb,
-    outputVariableName='{output_vars["displacement"]}',
-    steps=('Step-1', ), suppressQuery=True)
-
-xy_combined = combine(abs(xy_disp),abs(xy_force))
-
-model = mdb.models['Model-1']
-part  = model.parts['MergedStructure']
-
-# 计算几何体积
-volume = part.getVolume()
-print("MergedStructure 体积 =", volume)
-
-# 计算密度 = 体积/size的三次方
-cell_size = {cell_size}
-density = volume / (cell_size ** 3)
-print("密度 (density) =", density)
-
-# 提取xy_combined数据进行SEA/Strength计算
-displacement_data = []
-force_data = []
-for i in range(len(xy_combined)):
-    displacement_data.append(xy_combined[i][0])
-    force_data.append(xy_combined[i][1])
-
-# 计算strength/SEA
-speed_enabled = {repr(speed_value)} is not None
-if speed_enabled:
-    # 计算SEA = Total_Energy_Absorbed / Structure_Mass
-    # Total_Energy_Absorbed是在displacement达到最大值之前F对D的积分
-    max_displacement = max(displacement_data)
-
-    # 找到达到最大displacement的索引
-    max_disp_index = displacement_data.index(max_displacement)
-
-    # 截取到最大displacement的数据
-    disp_to_max = displacement_data[:max_disp_index+1]
-    force_to_max = force_data[:max_disp_index+1]
-
-    # 使用梯形法则计算积分 (Total_Energy_Absorbed)
-    total_energy_absorbed = 0.0
-    for i in range(len(disp_to_max)-1):
-        # 梯形面积 = (f1 + f2) * (x2 - x1) / 2
-        area = (force_to_max[i] + force_to_max[i+1]) * (disp_to_max[i+1] - disp_to_max[i]) / 2.0
-        total_energy_absorbed += area
-
-    # Structure_Mass = 1.2e-09 * volume
-    structure_mass = 1.2e-09 * volume
-
-    # SEA = Total_Energy_Absorbed / Structure_Mass
-    sea_value = total_energy_absorbed / structure_mass
-    feature_value = "SEA: " + str(sea_value)
-    print("SEA =", sea_value)
-else:
-    # 计算strength (max value point of xy_combined)
-    strength_value = max(force_data)
-    feature_value = "Strength: " + str(strength_value)
-    print("Strength =", strength_value)
-
-# 保存为txt文件，按照新格式输出
-with open('feature_data.txt', 'w') as f:
-    f.write("{job_name}\\n")
-    f.write(feature_value + "\\n")
-    f.write("density: " + str(density) + "\\n")
-    f.write("F_D curve:\\n")
-
-# 然后追加xy_combined数据
-session.writeXYReport(fileName='feature_data.txt', xyData=(xy_combined, ), appendMode=ON)
-
-
-# 关闭ODB
-odb.close()
+# 脚本自然结束，Abaqus CAE 会自动退出并释放 license
+# 注意：不要使用 sys.exit()，它会导致批处理脚本也退出
 
 """
         return content.rstrip() + addition
 
+    def _generate_postprocess_script(self, output_dir, cell_size, speed_value=None, direction_value=None, script_filename=None):
+        """生成后处理脚本内容"""
+        import os
+        # 使用脚本文件名（去掉.py扩展名）作为job_name
+        if script_filename:
+            job_name = os.path.splitext(script_filename)[0]
+        else:
+            job_name = os.path.basename(output_dir).replace('.', 'p')
 
+        # 根据direction是否选中决定使用U1还是U2
+        if direction_value:
+            disp_var_name = "U1"
+        else:
+            disp_var_name = "U2"
+
+        postprocess_content = f"""# -*- coding: utf-8 -*-
+# Abaqus后处理脚本 - 自动等待计算完成并提取结果
+from abaqus import *
+from abaqusConstants import *
+import os
+import time
+import sys
+
+print("="*80)
+print("POST-PROCESSING SCRIPT STARTED")
+print("Python version:", sys.version)
+print("="*80)
+
+# 使用当前工作目录
+script_dir = os.getcwd()
+print("Working directory:", script_dir)
+
+# 等待计算完成
+odb_filename = '{job_name}.odb'
+lck_filename = '{job_name}.lck'
+
+print("ODB file to process:", odb_filename)
+print("Checking file existence...")
+print("  ODB exists:", os.path.exists(odb_filename))
+print("  LCK exists:", os.path.exists(lck_filename))
+print("Waiting for job completion...")
+
+# 第1步：等待ODB文件生成（作业开始）
+timeout = 3600  # 1小时超时
+start_time = time.time()
+job_status = "unknown"  # 记录作业状态: completed, timeout, no_odb
+
+try:
+    while not os.path.exists(odb_filename):
+        if time.time() - start_time > timeout:
+            print("WARNING: Timeout - ODB file not created after 1 hour")
+            job_status = "no_odb"
+            break
+        time.sleep(10)
+        print("Waiting for ODB to be created...")
+
+    if job_status == "unknown":
+        print("ODB file detected, waiting for analysis to complete...")
+
+        # 第2步：等待.lck文件消失（作业完成）
+        while os.path.exists(lck_filename):
+            if time.time() - start_time > timeout:
+                print("WARNING: Timeout - Job still running after 1 hour, will attempt data extraction anyway")
+                job_status = "timeout"
+                break
+            time.sleep(10)
+            print("Analysis running (lck file exists)...")
+
+        if job_status == "unknown":
+            print("Analysis completed (lck file removed). Starting post-processing...")
+            job_status = "successful"
+
+        time.sleep(2)  # 短暂等待确保文件写入完成
+
+except Exception as e:
+    print("ERROR during job monitoring: " + str(e))
+    job_status = "error"
+
+print("Job status: " + job_status)
+print("Attempting data extraction...")
+
+# ===== 开始后处理 =====
+import xyPlot
+
+# 检查ODB文件是否存在
+if not os.path.exists(odb_filename):
+    print("=" * 80)
+    print("ERROR: ODB file does not exist!")
+    print("Job failed to create output database.")
+    print("=" * 80)
+    raise RuntimeError("ODB file not created - job failed")
+
+# 如果超时但作业仍在运行，等待.lck文件消失
+if job_status == "timeout":
+    print("=" * 80)
+    print("Job timed out - waiting for lock file to be released...")
+    print("=" * 80)
+    # 额外等待一段时间，看作业是否会自然结束
+    extra_wait = 300  # 额外等待5分钟
+    extra_start = time.time()
+    while os.path.exists(lck_filename) and (time.time() - extra_start < extra_wait):
+        time.sleep(10)
+        print("  Still waiting for lock file (timeout + extra wait)...")
+
+    # 如果还有锁文件，说明作业卡住了
+    if os.path.exists(lck_filename):
+        print("Lock file still exists after extra wait - job may be stuck")
+        print("Attempting to proceed anyway...")
+
+# 打开odb文件进行后处理
+try:
+    odb = session.openOdb(name=odb_filename)
+except Exception as e:
+    print("=" * 80)
+    print("ERROR: Cannot open ODB file!")
+    print("Error details: " + str(e))
+    print("=" * 80)
+    raise RuntimeError("Cannot open ODB file: " + str(e))
+
+try:
+    # ===== 自动查找输出变量名 =====
+    step = odb.steps['Step-1']
+    force_var = None
+    disp_var = None
+    force_key = None
+    disp_key = None
+
+    # 确定要查找的反力和位移变量名
+    disp_key = '{disp_var_name}'
+    direction_mode = '{direction_value}'
+    speed_mode = '{speed_value}'
+
+    # 确定 force_key: 根据位移变量名直接对应
+    if disp_key == 'U1':
+        force_key = 'RF1'
+    else:
+        force_key = 'RF2'  # 默认
+
+    # 判断是否为 Dynamic 模式
+    is_dynamic = (direction_mode != 'X' and direction_mode != 'None') or (speed_mode != 'None')
+    print("Mode: " + ("Dynamic" if is_dynamic else "Static"))
+
+    # 调试：打印所有可用的region及其输出变量
+    print("=" * 80)
+    print("Available history regions:")
+    for region_name in step.historyRegions.keys():
+        region = step.historyRegions[region_name]
+        outputs = region.historyOutputs.keys()
+        print("  - " + region_name + " -> " + str(outputs))
+
+    print("")
+    print("=" * 80)
+    print("Searching for: Displacement=%s, Force=%s" % (disp_key, force_key))
+    print("=" * 80)
+
+    # 辅助函数：从候选列表中选择绝对值均值最大的
+    def select_by_max_mean(candidates, output_key, label):
+        if len(candidates) == 0:
+            return None
+        elif len(candidates) == 1:
+            selected = candidates[0][0]
+            print("  Selected %s: %s" % (label, selected))
+            return selected
+        else:
+            max_mean = -1
+            selected = None
+            for name, reg in candidates:
+                data = reg.historyOutputs[output_key].data
+                mean_val = sum([abs(d[1]) for d in data]) / len(data) if data else 0
+                print("  %s candidate %s mean: %f" % (label, name, mean_val))
+                if mean_val > max_mean:
+                    max_mean = mean_val
+                    selected = name
+            print("  Selected %s (max mean): %s (mean=%f)" % (label, selected, max_mean))
+            return selected
+
+    # 查找位移：根据模式决定在哪里查找
+    disp_candidates = []
+    if is_dynamic:
+        # Dynamic: 位移在 MERGEDSTRUCTURE-1
+        print("[Dynamic Mode] Searching displacement in MERGEDSTRUCTURE-1...")
+        for region_name in step.historyRegions.keys():
+            region = step.historyRegions[region_name]
+            if 'MERGEDSTRUCTURE-1' in region_name.upper():
+                if disp_key in region.historyOutputs.keys():
+                    disp_candidates.append((region_name, region))
+                    print("  Found displacement candidate: %s" % region_name)
+    else:
+        # Static/其他: 位移在 RIGIDPLATE-2
+        print("[Static Mode] Searching displacement in RIGIDPLATE-2...")
+        for region_name in step.historyRegions.keys():
+            region = step.historyRegions[region_name]
+            if 'RIGIDPLATE-2' in region_name.upper():
+                if disp_key in region.historyOutputs.keys():
+                    disp_candidates.append((region_name, region))
+                    print("  Found displacement candidate: %s" % region_name)
+
+    disp_var = select_by_max_mean(disp_candidates, disp_key, "displacement")
+
+    # 查找反力：在所有 RIGIDPLATE 中查找，选择均值最大的
+    print("Searching force in all RIGIDPLATE...")
+    force_candidates = []
+    for region_name in step.historyRegions.keys():
+        region = step.historyRegions[region_name]
+        if 'RIGIDPLATE' in region_name.upper():
+            if force_key in region.historyOutputs.keys():
+                force_candidates.append((region_name, region))
+                print("  Found force candidate: %s" % region_name)
+
+    force_var = select_by_max_mean(force_candidates, force_key, "force")
+
+    # ===== 最终结果 =====
+    print("")
+    print("=" * 80)
+    print("FINAL RESULT:")
+    print("  Force variable (%s): %s" % (force_key, str(force_var)))
+    print("  Displacement variable (%s): %s" % (disp_key, str(disp_var)))
+    print("=" * 80)
+
+    if force_var is None or disp_var is None:
+        error_msg = "Cannot find required output variables. Force: " + str(force_var) + ", Disp: " + str(disp_var)
+        odb.close()
+        raise ValueError(error_msg)
+
+    # 提取数据
+    force_region = step.historyRegions[force_var]
+    force_data = force_region.historyOutputs[force_key]
+    xy_force = session.XYData('Force', force_data.data)
+
+    disp_region = step.historyRegions[disp_var]
+    disp_data = disp_region.historyOutputs['{disp_var_name}']
+    xy_disp = session.XYData('Displacement', disp_data.data)
+
+    # 合并数据
+    xy_combined = combine(abs(xy_disp), abs(xy_force))
+
+    # 切换到输出目录
+    os.chdir(r"{output_dir}")
+
+    # 读取前处理阶段计算的密度
+    density = 0.0
+    try:
+        with open('density_temp.txt', 'r') as f:
+            density = float(f.read().strip())
+        print("Density loaded from file: ", density)
+    except Exception as e:
+        print("Warning: Cannot load density from file: " + str(e))
+        density = 0.0
+
+    # 保存为txt文件
+    with open('feature_data.txt', 'w') as f:
+        f.write('{job_name}' + "\\n")
+        f.write("status: " + job_status + "\\n")
+        f.write("density: " + str(density) + "\\n")
+        f.write(str(disp_var) + " " + str(force_var))
+
+    # 追加xy_combined数据
+    session.writeXYReport(fileName='feature_data.txt', xyData=(xy_combined, ), appendMode=ON)
+
+    # 关闭ODB
+    odb.close()
+
+    # 删除ODB文件，只保留txt和log
+    if os.path.exists(odb_filename):
+        try:
+            os.remove(odb_filename)
+            print("ODB deleted: " + odb_filename)
+        except:
+            print("Warning: Could not delete ODB file")
+
+    print("=" * 80)
+    print("Post-processing completed successfully!")
+    print("Status: " + job_status)
+    print("=" * 80)
+
+except Exception as e:
+    print("=" * 80)
+    print("FATAL ERROR during post-processing")
+    print("Error: " + str(e))
+    print("=" * 80)
+    import traceback
+    traceback.print_exc()
+    raise  # 重新抛出异常，让脚本以错误状态退出
+
+print("CAE will exit after script completion to release license.")
+
+# 脚本自然结束，Abaqus CAE 会自动退出并释放 license
+# 注意：不要使用 sys.exit()，它会导致批处理脚本也退出
+"""
+        return postprocess_content
+
+    def _replace_amp_parameters(self, content, cell_size):
+        """根据size值替换amp-1范围参数，目前0.6对应size=5"""
+        try:
+            # 计算amp值：基于size=5对应0.6的比例关系
+            # amp_value = 0.6 * (cell_size / 5.0)
+            base_size = 5.0  # 基础size值
+            base_amp = 0.6   # 基础amp值
+
+            cell_size_float = float(cell_size)
+            amp_value = base_amp * (cell_size_float / base_size)
+
+            print(f"\n=== Amp-1参数替换调试信息 ===")
+            print(f"单元尺寸: {cell_size_float}")
+            print(f"基础尺寸: {base_size}")
+            print(f"基础Amp值: {base_amp}")
+            print(f"计算的Amp值: {amp_value}")
+
+            # 格式化数值，保持4位小数精度，然后移除尾随零
+            formatted_amp = f"{amp_value:.4f}".rstrip('0').rstrip('.')
+            if not formatted_amp:
+                formatted_amp = '0'
+
+            # 替换TabularAmplitude中的data参数
+            # 匹配模式：data=((0.0, 0.0), (0.6, 1.0))
+            pattern = r'data=\(\(0\.0, 0\.0\), \(0\.6, 1\.0\)\)'
+            replacement = f'data=((0.0, 0.0), ({formatted_amp}, 1.0))'
+            content = re.sub(pattern, replacement, content)
+
+            # 同时替换seedPart中的size参数
+            # 匹配模式：size=0.6
+            size_pattern = r'size=0\.6(?=,|\)|$)'
+            size_replacement = f'size={formatted_amp}'
+            content = re.sub(size_pattern, size_replacement, content)
+
+            print(f"已将Amp-1参数替换为: {formatted_amp}")
+            print(f"已将seedPart size参数替换为: {formatted_amp}")
+
+            return content
+
+        except (ValueError, TypeError) as e:
+            print(f"Warning: 无法转换cell_size到数值: {cell_size}, 错误: {e}")
+            return content
 
     def _replace_velocity_parameters(self, content, speed_value):
         """替换velocity2参数，根据speed_value调整速度值"""
@@ -484,49 +860,58 @@ odb.close()
             print(f"Warning: 无法转换speed_value到数值: {speed_value}, 错误: {e}")
             return content
 
-    def _replace_direction_parameters(self, content, direction_value):
-        """根据direction复选框的值更改direction脚本最后的内容"""
-        try:
-            print(f"\n=== 方向参数替换调试信息 ===")
-            print(f"Direction值: {direction_value}")
-
-            # 如果是Z方向，不做修改
-            if direction_value == "Z":
-                print("Direction为Z，保持原有参数")
-                return content
-
-            # 如果是X方向，修改脚本最后的参数
-            elif direction_value == "X":
-                print("Direction为X，修改脚本最后的参数")
-
-                # 替换第一个setValuesInStep中的参数：u1=0.0, u2=0.0, u3=-0.5 -> u1=-0.5, u2=0.0, u3=0.0
-                pattern1 = r"stepName='Step-1',u1=0\.0,\s*u2=0\.0,\s*u3=-0\.5"
-                replacement1 = "stepName='Step-1',u1=-0.5, u2=0.0, u3=0.0"
-                content = re.sub(pattern1, replacement1, content)
-
-                # 替换setValues中的参数：u1=SET,u2=SET, u3=UNSET -> u1=UNSET,u2=SET, u3=SET
-                pattern2 = r"setValues\(u1=SET,u2=SET,\s*u3=UNSET\)"
-                replacement2 = "setValues(u1=UNSET,u2=SET, u3=SET)"
-                content = re.sub(pattern2, replacement2, content)
-
-                print("已将方向参数替换为X方向设置")
-                return content
-
-            else:
-                print(f"Warning: 未知的direction值: {direction_value}")
-                return content
-
-        except Exception as e:
-            print(f"Warning: 方向参数替换出错: {e}")
-            return content
-
 
     def _replace_radius(self, content, cell_radius):
-        """替换半径参数"""
-        # 查找并替换radius = xxx这一行
+        """替换半径参数并动态调整网格密度"""
+        # 1. 查找并替换radius = xxx这一行
         pattern = r'radius = [\d.]+\s*$'
         replacement = f'radius = {cell_radius}'
         content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+
+        # 2. 根据radius动态调整网格密度
+        # 基准: radius=0.3 对应 mesh_size=0.2
+        # 当radius增大时，网格密度按比例的1/2增大（保持合理的网格数量）
+        base_radius = 0.3
+        base_mesh_size = 0.2
+
+        # 计算新的网格密度: mesh_size = base_mesh_size * (radius / base_radius)^0.5
+        # 使用平方根使网格密度增长速度比radius慢，避免网格过粗
+        radius_ratio = float(cell_radius) / base_radius
+        new_mesh_size = base_mesh_size * (radius_ratio ** 0.5)
+
+        # 格式化为两位小数
+        new_mesh_size = round(new_mesh_size, 2)
+
+        # 3. 替换MergedStructure的seedPart size参数（通常是第一个）
+        # 匹配模式: p.seedPart(size=0.2, ...
+        mesh_pattern = r'(p\.seedPart\(size=)[\d.]+(\s*,)'
+        mesh_replacement = rf'\g<1>{new_mesh_size}\g<2>'
+        content = re.sub(mesh_pattern, mesh_replacement, content, count=1)
+
+        print(f"\n=== 网格密度动态调整 ===")
+        print(f"Radius: {cell_radius}")
+        print(f"Radius比例: {radius_ratio:.3f}")
+        print(f"调整后网格密度: {new_mesh_size}")
+
+        return content
+
+    def _replace_template_cell_size(self, content, cell_size):
+        """替换模板开头的cell_size值"""
+        # 查找并替换cell_size = xxx这一行
+        pattern = r'cell_size = [\d.]+\s*$'
+
+        # 处理数值，移除不必要的小数点
+        size_str = str(int(float(cell_size))) if float(cell_size).is_integer() else str(cell_size)
+        replacement = f'cell_size = {size_str}'
+
+        content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+
+        print(f"\n=== Cell Size模板替换调试信息 ===")
+        print(f"原始cell_size: 5")
+        print(f"新cell_size: {size_str}")
+        print(f"替换模式: {pattern}")
+        print(f"替换内容: {replacement}")
+
         return content
 
     def _replace_coordinates(self, content, coords, cell_size):
@@ -715,77 +1100,51 @@ odb.close()
 
         return content
 
-    def _generate_rigid_body_detection(self, structure_data, cell_size):
-        """生成上下刚体识别代码（简化版）"""
-        try:
-            # 尝试获取结构名称
-            structure_name = getattr(self, '_current_structure_name', 'Unknown')
-
-            # 计算上下刚体的Z坐标位置
-            cell_size_float = float(cell_size)
-            top_rigid_z = cell_size_float / 2      # 顶部刚体位置
-            bottom_rigid_z = -cell_size_float / 2  # 底部刚体位置
-
-            # 生成简化的刚体识别代码
-            rigid_body_code = f"""
-    # === 上下刚体识别 ===
-    def identify_rigid_bodies():
-        '''
-        识别结构的上下刚体区域
-        顶部刚体Z坐标: {top_rigid_z}
-        底部刚体Z坐标: {bottom_rigid_z}
-        结构类型: {structure_name}
-        '''
-        print("=== 上下刚体识别 ===")
-        print(f"结构类型: {structure_name}")
-        print(f"单元尺寸: {cell_size_float}")
-        print(f"顶部刚体Z坐标: {top_rigid_z}")
-        print(f"底部刚体Z坐标: {bottom_rigid_z}")
-
-        # 这里可以添加具体的刚体识别逻辑
-        # 当前版本仅输出识别信息
-
-        return {{"top_z": {top_rigid_z}, "bottom_z": {bottom_rigid_z}}}
-
-    # 执行刚体识别
-    rigid_body_info = identify_rigid_bodies()
-"""
-            return rigid_body_code
-
-        except Exception as e:
-            print(f"Warning: Rigid body detection failed ({e})")
-            return ""
+    # def _generate_rigid_body_detection(self, structure_data, cell_size):
+    #     """生成上下刚体识别代码（已禁用）"""
+    #     # 刚体识别功能已禁用，因为：
+    #     # 1. 当前代码只输出调试信息，无实际功能
+    #     # 2. 插入位置复杂，容易导致缩进错误
+    #     # 如需启用，需要修复插入逻辑以确保代码插入到Macro1函数内部
+    #     return ""
 
 
 
-    def _insert_rigid_body_detection(self, content, rigid_body_code):
-        """将上下刚体识别代码插入到适当位置"""
-        # 在Macro1()函数内，接触定义之前插入
-        # 寻找"# === 接触属性 ==="的位置
-        contact_pattern = r'(\s*# === 接触属性 ===)'
+    # def _insert_rigid_body_detection(self, content, rigid_body_code):
+    #     """将上下刚体识别代码插入到适当位置"""
+    #     # 在Macro1()函数内，接触定义之前插入
+    #     # 使用灵活的正则表达式，支持多种注释格式
 
-        # 如果找到接触属性标记，在其前面插入
-        if re.search(contact_pattern, content):
-            replacement = rigid_body_code + r'\1'
-            content = re.sub(contact_pattern, replacement, content, count=1)
-        else:
-            # 如果没找到，在第一个ContactProperty定义前插入
-            contact_property_pattern = r'(\s*mdb\.models\[\'Model-1\'\]\.ContactProperty\(\'IntProp-1\'\))'
-            if re.search(contact_property_pattern, content):
-                replacement = rigid_body_code + r'\1'
-                content = re.sub(contact_property_pattern, replacement, content, count=1)
+    #     # 第一层：尝试匹配包含"接触"的注释（如"接触属性"、"接触定义"等）
+    #     contact_pattern = r'(\s*#.*?接触.*?\n)'
 
-        return content
+    #     # 如果找到接触相关标记，在其前面插入
+    #     if re.search(contact_pattern, content):
+    #         replacement = rigid_body_code + r'\1'
+    #         content = re.sub(contact_pattern, replacement, content, count=1)
+    #         print("刚体识别代码已插入（在接触注释前）")
+    #     else:
+    #         # 如果没找到，在第一个ContactProperty定义前插入
+    #         contact_property_pattern = r'(\s*mdb\.models\[\'Model-1\'\]\.ContactProperty\(\'IntProp-1\'\))'
+    #         if re.search(contact_property_pattern, content):
+    #             replacement = rigid_body_code + r'\1'
+    #             content = re.sub(contact_property_pattern, replacement, content, count=1)
+    #             print("刚体识别代码已插入（在ContactProperty前）")
+    #         else:
+    #             print("警告：未找到合适的位置插入刚体识别代码")
+
+    #     return content
 
 
     def _generate_filename(self, cell_type, cell_size, cell_radius, slider, speed_value=None, direction_value=None):
-        """生成文件名"""
+        """生成文件名 (小数点替换为p)"""
         # 清理cell_type，移除特殊字符
         clean_cell_type = re.sub(r'[^\w-]', '', cell_type)
 
         # 处理数值，移除不必要的小数点
         size_str = str(int(float(cell_size))) if float(cell_size).is_integer() else str(cell_size)
-        radius_str = str(cell_radius).rstrip('0').rstrip('.')
+        # radius文件名：将小数点替换为p
+        radius_str = str(cell_radius).replace('.', 'p')
 
         # 确定后缀
         if speed_value is not None:

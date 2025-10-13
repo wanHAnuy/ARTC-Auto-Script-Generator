@@ -7,10 +7,9 @@ def generate_truncated_cuboctahedron(S=2.5, slider=4):
     # slider_list: 包含所有产生96条边的slider值
     # 索引0-32对应33个不同的96边配置
     slider_list = [
-        0, 1, 2,
-        3, 4,
+        1, 2, 3, 4, 4.5,
         # 4.1, 4.2, 4.4, 4.5, 4.6, 4.8, 
-        4.9,6,7, 
+        4.9, 6, 7, 
         # 7.1, 7.3, 7.4, 
         7.5,
         # 7.6, 7.7, 
@@ -201,8 +200,9 @@ def get_crystal_structure(structure_name, slider=4):
                 "B_ = [ 2.5,  2.5, -2.5]",
                 "C_ = [ 2.5, -2.5, -2.5]",
                 "D_ = [-2.5, -2.5, -2.5]",
+                "O = [ 0, 0, 0]",  # 中心点
 
-                #  4个面心点
+                #  6个面心点
                 f"E1 = [ 0.0000,  2.5,  0.0000]",  # 前面中心 - 连接A-B_
                 f"E3 = [ 0.0000, -2.5,  0.0000]",  # 后面中心 - 连接C-D_
 
@@ -883,6 +883,8 @@ def get_crystal_structure(structure_name, slider=4):
     ]
     },
     'Truncated_Octoctahedron': generate_truncated_cuboctahedron(S=2.5, slider=slider),
+
+
     'Octahedron': {
             'coords': [
                 "A = [ 0.0000,  0.0000,  2.5000]",  # Top vertex

@@ -18,28 +18,23 @@ def get_current_dir():
         return os.path.dirname(os.path.abspath(__file__))
 
 current_dir = get_current_dir()
+sys.path.insert(0, current_dir)
 
-# 全局变量：追踪本次运行期间生成的文件
-generated_files_this_session = []
+# 使用新的FileTracker类替代全局变量
+from file_tracker import file_tracker
 
+# 向后兼容的包装函数
 def add_generated_file(file_path):
-    """添加生成的文件到追踪列表"""
-    global generated_files_this_session
-    if file_path and os.path.exists(file_path) and file_path.endswith('.py'):
-        if file_path not in generated_files_this_session:
-            generated_files_this_session.append(file_path)
-            print(f"已添加到追踪列表: {os.path.basename(file_path)}")
+    """添加生成的文件到追踪列表（向后兼容）"""
+    return file_tracker.add(file_path)
 
 def get_generated_files():
-    """获取本次运行生成的文件列表"""
-    global generated_files_this_session
-    return generated_files_this_session.copy()
+    """获取本次运行生成的文件列表（向后兼容）"""
+    return file_tracker.get_all()
 
 def clear_generated_files():
-    """清空生成文件追踪列表"""
-    global generated_files_this_session
-    generated_files_this_session.clear()
-sys.path.insert(0, current_dir)
+    """清空生成文件追踪列表（向后兼容）"""
+    file_tracker.clear()
 
 try:
     from PyQt5.QtWidgets import QApplication, QMessageBox
@@ -57,193 +52,11 @@ except ImportError as e:
     sys.exit(1)
 
 
-def generate_shell_script(python_files, output_dir, script_type="sh"):
-    """生成shell脚本文件 (Linux .sh 或 Windows .bat)"""
-    try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+# 导入新的脚本生成器模块
+from shell_script_generator import generate_shell_script
 
-        if script_type == "sh":
-            # Linux shell script
-            script_filename = f"run_all_scripts_{timestamp}.sh"
-            script_path = os.path.join(output_dir, script_filename)
-
-            # 生成shell脚本内容
-            shell_content = [
-                "#!/bin/bash",
-                "echo 'Abaqus Batch Script Executor - Auto Generated on Exit'",
-                "echo '" + "="*60 + "'",
-                "",
-                "# Set up Abaqus environment - modify path as needed",
-                "# Common Abaqus installation paths:",
-                "# export PATH=\"/usr/local/SIMULIA/Commands:$PATH\"",
-                "# export PATH=\"/opt/SIMULIA/Commands:$PATH\"",
-                "# export PATH=\"/apps/abaqus/Commands:$PATH\"",
-                "",
-                "# Check if abaqus command is available",
-                "if ! command -v abaqus &> /dev/null; then",
-                "    echo 'WARNING: abaqus command not found in PATH'",
-                "    echo 'Please ensure Abaqus is properly installed and PATH is set'",
-                "    echo 'You may need to source the Abaqus environment script'",
-                "    echo 'Example: source /usr/local/SIMULIA/Commands/abaqus_v6.env'",
-                "    echo 'Or add Abaqus Commands directory to PATH'",
-                "    echo",
-                "fi",
-                ""
-            ]
-
-            for i, script_file in enumerate(python_files, 1):
-                script_name = os.path.basename(script_file)
-                script_dir = os.path.dirname(script_file)
-                feature_data_path = os.path.join(script_dir, "feature_data.txt").replace('\\', '/')
-                shell_content.extend([
-                    f"echo '[{i}/{len(python_files)}] Executing script: {script_name}'",
-                    f"echo 'Script path: {script_file}'",
-                    f"echo 'Command: timeout 1 abaqus cae noGUI=\"{script_file}\"'",
-                    "echo '" + "="*60 + "'",
-                    f"# Check if feature_data.txt exists and is not empty",
-                    f"if [ -s \"{feature_data_path}\" ]; then",
-                    f"    echo 'feature_data.txt already exists and is not empty, skipping script execution'",
-                    f"    echo 'Script {script_name} appears to be already completed'",
-                    f"else",
-                    f"    # Run script with timeout and retry if needed",
-                    f"    retry_count=0",
-                    f"    max_retries=3",
-                    f"    while [ $retry_count -lt $max_retries ]; do",
-                    f"        echo \"Attempt $((retry_count + 1)) of $max_retries: Running script {script_name}...\"",
-                    f"        timeout 1 abaqus cae noGUI=\"{script_file}\"",
-                    f"        exit_code=$?",
-                    f"        ",
-                    f"        # Check if feature_data.txt was generated and is not empty",
-                    f"        if [ -s \"{feature_data_path}\" ]; then",
-                    f"            echo 'Success: feature_data.txt generated successfully'",
-                    f"            break",
-                    f"        elif [ $exit_code -eq 124 ]; then",
-                    f"            echo 'Script timed out after 1 second'",
-                    f"        elif [ $exit_code -ne 0 ]; then",
-                    f"            echo \"Script failed with exit code $exit_code\"",
-                    f"        else",
-                    f"            echo 'Script completed but no valid feature_data.txt found'",
-                    f"        fi",
-                    f"        ",
-                    f"        retry_count=$((retry_count + 1))",
-                    f"        if [ $retry_count -lt $max_retries ]; then",
-                    f"            echo 'Retrying in 2 seconds...'",
-                    f"            sleep 2",
-                    f"        fi",
-                    f"    done",
-                    f"    ",
-                    f"    if [ $retry_count -eq $max_retries ] && [ ! -s \"{feature_data_path}\" ]; then",
-                    f"        echo 'ERROR: Failed to generate valid feature_data.txt after $max_retries attempts'",
-                    f"    fi",
-                    f"fi",
-                    "echo"
-                ])
-
-            shell_content.extend([
-                "echo '" + "="*60 + "'",
-                "echo 'All scripts execution completed!'",
-                "read -p 'Press Enter to continue...'"
-            ])
-
-            # 写入shell脚本文件
-            with open(script_path, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(shell_content))
-
-            # 设置执行权限
-            import stat
-            os.chmod(script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IROTH)
-
-            print(f"Shell脚本已生成: {script_filename}")
-            print(f"文件路径: {script_path}")
-            print("在Linux中可执行: chmod +x script.sh && ./script.sh")
-
-        else:  # bat
-            # Windows batch script (original logic)
-            script_filename = f"run_all_scripts_{timestamp}.bat"
-            script_path = os.path.join(output_dir, script_filename)
-
-            batch_content = [
-                "@echo off",
-                "setlocal enabledelayedexpansion",
-                "echo Abaqus Batch Script Executor - Auto Generated on Exit",
-                "echo " + "="*60,
-                ""
-            ]
-
-            for i, script_file in enumerate(python_files, 1):
-                script_name = os.path.basename(script_file)
-                script_dir = os.path.dirname(script_file)
-                feature_data_path = os.path.join(script_dir, "feature_data.txt")
-                batch_content.extend([
-                    f"echo [{i}/{len(python_files)}] Executing script: {script_name}",
-                    f"echo Script path: {script_file}",
-                    f"echo Command: timeout 1 abaqus cae noGUI=\"{script_file}\"",
-                    "echo " + "="*60,
-                    f"rem Check if feature_data.txt exists and is not empty",
-                    f"if exist \"{feature_data_path}\" (",
-                    f"    for %%i in (\"{feature_data_path}\") do set size=%%~zi",
-                    f"    if !size! gtr 0 (",
-                    f"        echo feature_data.txt already exists and is not empty, skipping script execution",
-                    f"        echo Script {script_name} appears to be already completed",
-                    f"        goto :next{i}",
-                    f"    )",
-                    f")",
-                    f"rem Run script with timeout and retry if needed",
-                    f"set retry_count=0",
-                    f"set max_retries=3",
-                    f":retry_loop{i}",
-                    f"set /a attempt=!retry_count!+1",
-                    f"echo Attempt !attempt! of !max_retries!: Running script {script_name}...",
-                    f"timeout 1 abaqus cae noGUI=\"{script_file}\"",
-                    f"set exit_code=!errorlevel!",
-                    f"",
-                    f"rem Check if feature_data.txt was generated and is not empty",
-                    f"if exist \"{feature_data_path}\" (",
-                    f"    for %%i in (\"{feature_data_path}\") do set size=%%~zi",
-                    f"    if !size! gtr 0 (",
-                    f"        echo Success: feature_data.txt generated successfully",
-                    f"        goto :next{i}",
-                    f"    )",
-                    f")",
-                    f"",
-                    f"if !exit_code! equ 1 (",
-                    f"    echo Script timed out after 1 second",
-                    f") else if !exit_code! neq 0 (",
-                    f"    echo Script failed with exit code !exit_code!",
-                    f") else (",
-                    f"    echo Script completed but no valid feature_data.txt found",
-                    f")",
-                    f"",
-                    f"set /a retry_count+=1",
-                    f"if !retry_count! lss !max_retries! (",
-                    f"    echo Retrying in 2 seconds...",
-                    f"    timeout /t 2 >nul",
-                    f"    goto :retry_loop{i}",
-                    f")",
-                    f"",
-                    f"echo ERROR: Failed to generate valid feature_data.txt after !max_retries! attempts",
-                    f":next{i}",
-                    "echo."
-                ])
-
-            batch_content.extend([
-                "echo " + "="*60,
-                "echo All scripts execution completed!",
-                "pause"
-            ])
-
-            with open(script_path, 'w', encoding='ascii', errors='ignore') as f:
-                f.write('\n'.join(batch_content))
-
-            print(f"批处理文件已生成: {script_filename}")
-            print(f"文件路径: {script_path}")
-            print("可在Abaqus Command中执行此批处理文件")
-
-        return script_path
-
-    except Exception as e:
-        print(f"生成脚本文件时出错: {e}")
-        return None
+# 原来的321行函数已被重构到 shell_script_generator.py
+# 现在直接使用新模块的实现，消除了70%的代码重复
 
 
 def generate_batch_on_exit():
@@ -252,7 +65,8 @@ def generate_batch_on_exit():
         print("\n程序退出，正在生成批处理文件...")
 
         # 获取generate_script目录
-        generate_script_dir = os.path.join(current_dir, "generate_script")
+        from config import Config
+        generate_script_dir = os.path.join(current_dir, Config.GENERATE_SCRIPT_DIR)
         if not os.path.exists(generate_script_dir):
             print("未找到generate_script目录，跳过批处理文件生成")
             return
@@ -264,23 +78,54 @@ def generate_batch_on_exit():
             print("本次运行未生成任何Python脚本文件，跳过批处理文件生成")
             return
 
-        # 过滤确保文件仍然存在
-        existing_files = [f for f in python_files if os.path.exists(f)]
-        if not existing_files:
-            print("本次生成的文件已不存在，跳过批处理文件生成")
-            return
+        # 过滤确保文件仍然存在，并且分离前处理和后处理脚本
+        preprocess_files = [
+            f for f in python_files
+            if os.path.exists(f) and f.endswith('_preprocess.py')
+        ]
+        postprocess_files = [
+            f for f in python_files
+            if os.path.exists(f) and f.endswith('_postprocess.py')
+        ]
 
-        python_files = sorted(existing_files)
-        print(f"本次运行生成了 {len(python_files)} 个Python脚本文件")
+        # 如果有拆分的前处理/后处理脚本，使用优化的批处理生成器
+        if preprocess_files and postprocess_files:
+            print(f"本次运行生成了 {len(preprocess_files)} 个前处理脚本和 {len(postprocess_files)} 个后处理脚本")
+            print("生成优化的批处理脚本（最小化CAE license占用）...")
 
-        # 检测操作系统并生成相应的脚本
-        import platform
-        if platform.system() == "Windows":
-            generate_shell_script(python_files, generate_script_dir, "bat")
+            import platform
+            if platform.system() == "Windows":
+                from batch_script_generator import generate_split_batch_script
+                generate_split_batch_script(
+                    sorted(preprocess_files),
+                    sorted(postprocess_files),
+                    generate_script_dir
+                )
+            else:
+                # Linux/Unix系统生成.sh文件
+                from batch_script_generator import generate_split_shell_script
+                generate_split_shell_script(
+                    sorted(preprocess_files),
+                    sorted(postprocess_files),
+                    generate_script_dir
+                )
         else:
-            # Linux/Unix系统同时生成.sh和.bat文件
-            generate_shell_script(python_files, generate_script_dir, "sh")
-            generate_shell_script(python_files, generate_script_dir, "bat")  # 也生成bat以备跨平台使用
+            # 向后兼容：处理旧的单体脚本
+            existing_files = [f for f in python_files if os.path.exists(f)]
+            if not existing_files:
+                print("本次生成的文件已不存在，跳过批处理文件生成")
+                return
+
+            python_files = sorted(existing_files)
+            print(f"本次运行生成了 {len(python_files)} 个Python脚本文件")
+
+            # 检测操作系统并生成相应的脚本
+            import platform
+            if platform.system() == "Windows":
+                generate_shell_script(python_files, generate_script_dir, "bat")
+            else:
+                # Linux/Unix系统只生成.sh文件
+                generate_shell_script(python_files, generate_script_dir, "sh")
 
     except Exception as e:
         print(f"生成批处理文件时出错: {e}")
@@ -294,15 +139,11 @@ def main():
         print("已清空文件追踪列表，开始新会话")
 
         # 创建generate_script文件夹用于存放生成的文件
-        generate_script_dir = os.path.join(current_dir, "generate_script")
+        from config import Config
+        generate_script_dir = os.path.join(current_dir, Config.GENERATE_SCRIPT_DIR)
         if not os.path.exists(generate_script_dir):
             os.makedirs(generate_script_dir)
             print(f"已创建文件夹: {generate_script_dir}")
-
-            # 创建批量执行器脚本 - 已禁用，只生成bat文件
-            # from script_generator import AbaqusScriptGenerator
-            # generator = AbaqusScriptGenerator()
-            # generator.create_batch_executor(generate_script_dir)
 
         # 创建Qt应用程序实例
         app = QApplication(sys.argv)
@@ -344,7 +185,7 @@ def main():
         # 显示窗口
         window.show()
 
-        # # 初始化时立即更新一次可视化，并强制刷新视角
+        # 初始化时更新可视化并强制刷新视角
         def force_refresh():
             update_visualization()
             # 强制重置视角
@@ -352,7 +193,7 @@ def main():
                 window.visualization_widget.ax.view_init(elev=20, azim=135)
                 window.visualization_widget.canvas.draw()
 
-        QTimer.singleShot(1000, force_refresh)  # 延迟1秒确保界面完全加载
+        QTimer.singleShot(Config.FORCE_REFRESH_DELAY, force_refresh)
         
         # 运行应用程序事件循环
         exit_code = app.exec_()

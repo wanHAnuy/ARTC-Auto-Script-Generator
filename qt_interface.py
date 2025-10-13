@@ -2,11 +2,17 @@ import sys
 import os
 import json
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
-                           QWidget, QComboBox, QLabel, QPushButton, QFrame, QGridLayout, QSplitter, QCheckBox, QSlider, QMenuBar, QAction)
+                           QWidget, QComboBox, QLabel, QPushButton, QFrame, QGridLayout, QSplitter, QCheckBox, QSlider, QMenuBar, QAction, QLineEdit, QSpinBox, QDoubleSpinBox, QGroupBox)
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QPalette, QIcon
+from PyQt5.QtGui import QFont, QPalette, QIcon, QPixmap
 from visualization_widget import CellVisualizationWidget
 from script_generator import generate_abaqus_script
+from config import Config
+# 导入批量管理器
+try:
+    from batch_manager import BatchJobManager
+except ImportError:
+    BatchJobManager = None
 # 避免循环导入，在需要时动态导入
 
 
@@ -14,6 +20,14 @@ class ModernInterface(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Smart Generator")
+
+        # # 检测操作系统并设置适当的窗口大小
+        # import platform
+        # if platform.system() == "Linux":
+        #     # Linux系统缩小50%
+        #     self.setGeometry(100, 100, 750, 400)
+        # else:
+        #     # Windows和其他系统保持原尺寸
         self.setGeometry(100, 100, 1500, 800)
         # 设置窗口图标
         self.set_window_icon()
@@ -23,6 +37,9 @@ class ModernInterface(QMainWindow):
 
         # 设置文件路径
         self.settings_file = os.path.join(os.path.dirname(__file__), "ui_settings.json")
+
+        # 初始化批量管理器
+        self.batch_manager = BatchJobManager() if BatchJobManager else None
 
         self.setStyleSheet(self.get_stylesheet())
         self.init_ui()
@@ -138,10 +155,10 @@ class ModernInterface(QMainWindow):
             "Truncated_Octoctahedron",
             # "Cubic_Rosette_self_create"
             ]),
-            ("Speed:", ["10", "100", "1000"]),
-            ("Directions:", ["X", "Z"]),
-            ("Cell size:", ["5", "7", "9","11","13"]),
-            ("Strut radius:", ["0.5", "0.45", "0.4", "0.35", "0.3"])
+            ("Speed:", ["50", "500"]),
+            ("Directions:", ["X", "X_50","X_500"]),
+            ("Cell size:", ["4", "5", "6"]),
+            ("Strut radius:", ["0.5", "0.4", "0.3"])
         ]
         
         self.dropdowns = {}
@@ -232,6 +249,7 @@ class ModernInterface(QMainWindow):
         # Initialize slider state based on current cell type
         self.update_slider_state()
 
+
         left_layout.addWidget(form_frame)
         
         button_layout = QHBoxLayout()
@@ -286,7 +304,9 @@ class ModernInterface(QMainWindow):
                 "checkboxes": {},
                 "slider_value": self.slider.value() if self.slider else 4,
                 "slider_checkbox": self.slider_checkbox.isChecked() if self.slider_checkbox else False,
-                "slider_values": getattr(self, 'slider_values', {})
+                "slider_values": getattr(self, 'slider_values', {}),
+                "batch_enabled": getattr(self, 'batch_checkbox', None) and self.batch_checkbox.isChecked() if hasattr(self, 'batch_checkbox') else False,
+                "batch_config": getattr(self, 'batch_config', {})
             }
 
             # 保存下拉框的当前选择
@@ -348,6 +368,15 @@ class ModernInterface(QMainWindow):
             if "slider_values" in settings:
                 self.slider_values = settings["slider_values"]
 
+
+            # 恢复批量设置
+            if "batch_enabled" in settings and hasattr(self, 'batch_checkbox') and self.batch_checkbox:
+                self.batch_checkbox.setChecked(settings["batch_enabled"])
+                if hasattr(self, 'batch_config_button') and self.batch_config_button:
+                    self.batch_config_button.setEnabled(settings["batch_enabled"])
+
+            if "batch_config" in settings:
+                self.batch_config = settings["batch_config"]
 
             print(f"设置已从 {self.settings_file} 加载")
 
@@ -563,7 +592,7 @@ class ModernInterface(QMainWindow):
         QTimer.singleShot(1000, self.reset_button)
 
     def generate_single_config(self):
-        """单次生成配置（原有逻辑）"""
+        """单次生成配置"""
         try:
             # 收集UI配置
             config = {}
@@ -641,28 +670,45 @@ class ModernInterface(QMainWindow):
         try:
             import main
             clear_generated_files = main.clear_generated_files
-            generate_shell_script = main.generate_shell_script
             get_generated_files = main.get_generated_files
+            from shell_script_generator import generate_shell_script
+            from config import Config
+            from datetime import datetime
         except ImportError as e:
-            print(f"无法导入main模块: {e}")
+            print(f"无法导入必要模块: {e}")
             return
 
-        # 定义Cell Type分组
-        cell_type_groups = [
-            ("Group 1-4", ["Cubic", "BCC", "BCCZ", "Octet_truss"]),
-            ("Group 5-7", ["AFCC", "Truncated_cube", "FCC"]),
-            ("Group 8-10", ["FCCZ", "Tetrahedron_base", "Iso_truss"]),
-            ("Group 11-13", ["G7", "FBCCZ", "FBCCXYZ"]),
-            ("Group 14-16", ["Cuboctahedron_Z", "Diamond", "Rhombic"]),
-            ("Group 17-20", ["Kelvin", "Auxetic", "Octahedron", "Truncated_Octoctahedron"])
-        ]
-
-        # 无slider功能的cell types
-        no_slider_types = ["Cubic", "Octahedron"]
+        # 使用配置文件中的分组和设置
+        cell_type_groups = Config.CELL_TYPE_GROUPS
+        no_slider_types = Config.NO_SLIDER_CELL_TYPES
 
         try:
-            # 禁用按钮防止重复点击
+            # 禁用按钮防止重复点击，并设置运行状态样式
             self.triangle_button.setEnabled(False)
+            # 设置深红色运行状态
+            running_style = """
+                #triangle_button {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                        stop:0 #8b0000, stop:0.5 #660000, stop:1 #440000);
+                    color: white;
+                    border: 2px solid #660000;
+                    border-radius: 10px;
+                    font-size: 16px;
+                    font-weight: bold;
+                    text-align: center;
+                }
+            """
+            self.triangle_button.setStyleSheet(running_style)
+
+            # 创建带时间戳的任务文件夹
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            generate_script_root = os.path.join(os.path.dirname(__file__), "generate_script")
+            task_dir = os.path.join(generate_script_root, f"task_{timestamp}")
+            os.makedirs(task_dir, exist_ok=True)
+            print(f"创建任务文件夹: {task_dir}")
+
+            # 保存任务目录供后续使用
+            self.current_task_dir = task_dir
 
             total_groups = len(cell_type_groups)
             current_group = 0
@@ -688,35 +734,57 @@ class ModernInterface(QMainWindow):
                         # 只生成1个脚本
                         self._generate_single_script(cell_type, 4)  # 使用默认slider值4
                     else:
-                        # 生成9个脚本 (slider值 0-8)
+                        # 生成3个脚本 (slider值 0-2)
                         for slider_value in range(9):
                             self._generate_single_script(cell_type, slider_value)
 
-                # 生成当前组的批处理脚本
+                # 生成当前组的批处理脚本到task文件夹
                 python_files = get_generated_files()
                 if python_files:
                     print(f"{group_name} 共生成 {len(python_files)} 个脚本文件")
 
-                    # 获取输出目录
-                    if python_files:
-                        output_dir = os.path.dirname(python_files[0])
+                    # 获取配置参数用于命名
+                    cell_size = self.dropdowns.get("Cell size:", None)
+                    strut_radius = self.dropdowns.get("Strut radius:", None)
+                    speed_checkbox = self.checkboxes.get("Speed:", None)
+                    direction_checkbox = self.checkboxes.get("Directions:", None)
 
-                        # 检测操作系统并生成相应的脚本
-                        import platform
-                        if platform.system() == "Windows":
-                            generate_shell_script(python_files, output_dir, "bat")
+                    config_parts = []
+                    if cell_size:
+                        config_parts.append(cell_size.currentText())
+                    if strut_radius:
+                        config_parts.append(strut_radius.currentText())
+
+                    # 判断是static/speed/direction
+                    if speed_checkbox and speed_checkbox.isChecked():
+                        if direction_checkbox and direction_checkbox.isChecked():
+                            config_parts.append("dir")
                         else:
-                            generate_shell_script(python_files, output_dir, "sh")
-                            generate_shell_script(python_files, output_dir, "bat")
+                            config_parts.append("speed")
+                    else:
+                        config_parts.append("static")
 
-                        print(f"{group_name} 批处理脚本生成完成")
+                    config_name = "_".join(config_parts)
+
+                    # 使用task文件夹作为输出目录
+                    import platform
+                    if platform.system() == "Windows":
+                        generate_shell_script(python_files, task_dir, "bat", config_name=config_name)
+                    else:
+                        # Linux系统只生成.sh文件，不生成.bat文件
+                        generate_shell_script(python_files, task_dir, "sh", config_name=config_name)
+
+                    print(f"{group_name} 批处理脚本生成完成")
                 else:
                     print(f"警告: {group_name} 未生成任何脚本文件")
 
             print("\n=== 所有批处理脚本生成完成! ===")
 
-            # 生成主控制脚本
+            # 生成主控制脚本到task文件夹
             self.generate_master_control_script()
+
+            # 生成PBS脚本到task文件夹
+            self.generate_pbs_script()
 
             # 清理历史文件追踪
             clear_generated_files()
@@ -858,15 +926,62 @@ class ModernInterface(QMainWindow):
                         # For enabled cell types, enable checkbox but don't change its state
                         self.slider_checkbox.setEnabled(True)
 
-                # Update label color based on state
-                if hasattr(self, 'slider_label') and self.slider_label is not None:
-                    if should_disable:
-                        self.slider_label.setStyleSheet("color: #95a5a6; font-size: 27px; font-weight: 600; padding: 8px 0;")
-                    else:
-                        self.slider_label.setStyleSheet("color: #2c3e50; font-size: 27px; font-weight: 600; padding: 8px 0;")
+                
+                    # self.slider_label.setStyleSheet("color: #fffff; font-size: 27px; font-weight: 600; padding: 8px 0;")
 
                 # Store current cell type for next time
                 self.previous_cell_type = cell_type
+
+    def create_batch_controls(self, form_layout, start_row):
+
+        # 批量生成选项
+        batch_label = QLabel("Batch Mode:")
+        batch_label.setObjectName("input_label")
+
+        self.batch_checkbox = QCheckBox()
+        self.batch_checkbox.setObjectName("batch_checkbox")
+        self.batch_checkbox.toggled.connect(self.on_batch_toggle)
+
+        # 批量配置按钮
+        self.batch_config_button = QPushButton("Batch Config")
+        self.batch_config_button.setObjectName("batch_config_button")
+        self.batch_config_button.clicked.connect(self.show_batch_config)
+        self.batch_config_button.setEnabled(False)
+
+        form_layout.addWidget(batch_label, start_row + 1, 0)
+        form_layout.addWidget(self.batch_config_button, start_row + 1, 1)
+        form_layout.addWidget(self.batch_checkbox, start_row + 1, 2)
+
+        return start_row + 2
+
+
+    def on_batch_toggle(self, checked):
+        """批量模式切换处理"""
+        self.batch_config_button.setEnabled(checked)
+
+        if checked:
+            print("批量模式已启用")
+        else:
+            print("批量模式已禁用")
+
+
+    def show_batch_config(self):
+        """显示批量配置对话框"""
+        try:
+            from batch_config_dialog import BatchConfigDialog
+
+            if not hasattr(self, 'batch_config'):
+                self.batch_config = {}
+
+            dialog = BatchConfigDialog(self.batch_config, self)
+            if dialog.exec_() == dialog.Accepted:
+                self.batch_config = dialog.get_config()
+                print("批量配置已更新:", self.batch_config)
+        except ImportError:
+            # 如果没有配置对话框，显示简单的消息
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, "批量配置",
+                                  "批量配置功能需要额外的配置对话框模块。\n请手动设置参数组合。")
 
     def update_triangle_button_style(self):
         """更新三角按钮样式以匹配当前主题"""
@@ -882,19 +997,16 @@ class ModernInterface(QMainWindow):
                     font-size: 24px;
                     font-weight: bold;
                     text-align: center;
-                    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
                 }
                 #triangle_button:hover {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                         stop:0 #66bb6a, stop:0.5 #43a047, stop:1 #2e7d32);
                     border: 2px solid #81c784;
-                    transform: scale(1.05);
                 }
                 #triangle_button:pressed {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                         stop:0 #2e7d32, stop:0.5 #1b5e20, stop:1 #0d4b0b);
                     border: 2px solid #4caf50;
-                    transform: scale(0.95);
                 }
             """
         elif self.current_theme == "sunset":
@@ -909,19 +1021,16 @@ class ModernInterface(QMainWindow):
                     font-size: 24px;
                     font-weight: bold;
                     text-align: center;
-                    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
                 }
                 #triangle_button:hover {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                         stop:0 #ff6666, stop:0.5 #dd2222, stop:1 #aa1111);
                     border: 2px solid #ff8888;
-                    transform: scale(1.05);
                 }
                 #triangle_button:pressed {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                         stop:0 #cc2222, stop:0.5 #990000, stop:1 #660000);
                     border: 2px solid #cc4444;
-                    transform: scale(0.95);
                 }
             """
         else:  # space theme
@@ -936,30 +1045,27 @@ class ModernInterface(QMainWindow):
                     font-size: 24px;
                     font-weight: bold;
                     text-align: center;
-                    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
                 }
                 #triangle_button:hover {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                         stop:0 #5dade2, stop:0.5 #3498db, stop:1 #2980b9);
                     border: 2px solid #85c1e9;
-                    transform: scale(1.05);
                 }
                 #triangle_button:pressed {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                         stop:0 #2980b9, stop:0.5 #1f5f8a, stop:1 #154d6b);
                     border: 2px solid #3498db;
-                    transform: scale(0.95);
                 }
             """
 
         self.triangle_button.setStyleSheet(style)
 
     def show_completion_star(self):
-        """显示完成星星特效"""
-        # 显示星星
-        self.triangle_button.setText("🌟")
+        """显示完成图标特效"""
+        # 不显示图片，只显示✓符号
+        self.triangle_button.setText("✓")
 
-        # 设置星星样式
+        # 设置完成样式
         star_style = """
             #triangle_button {
                 background: qlinear-gradient(45deg, #ffd700, #ffed4e, #ffd700);
@@ -969,7 +1075,6 @@ class ModernInterface(QMainWindow):
                 font-size: 32px;
                 font-weight: bold;
                 text-align: center;
-                box-shadow: 0 0 15px #ffd700;
             }
         """
         self.triangle_button.setStyleSheet(star_style)
@@ -980,243 +1085,381 @@ class ModernInterface(QMainWindow):
     def restore_triangle_button_style(self):
         """恢复三角按钮正常样式"""
         self.triangle_button.setText("")
+        self.triangle_button.setIcon(QIcon())  # 清除图标
         self.update_triangle_button_style()
 
     def generate_master_control_script(self):
         """生成主控制脚本用于并行计算"""
         try:
             from datetime import datetime
+            import glob
 
-            # 获取输出目录（使用generate_script文件夹）
-            output_dir = os.path.join(os.path.dirname(__file__), "generate_script")
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
+            # 使用task文件夹作为输出目录
+            if not hasattr(self, 'current_task_dir'):
+                print("错误: 未找到任务文件夹")
+                return
 
+            output_dir = self.current_task_dir
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-            # 生成Linux并行脚本
-            self.create_linux_parallel_script(output_dir, timestamp)
+            # 查找所有生成的批处理脚本
+            script_pattern = os.path.join(output_dir, "run_all_scripts_*_*.sh")
+            batch_scripts = glob.glob(script_pattern)
+            batch_scripts.sort()  # 按文件名排序
 
-            # 生成Windows并行脚本
-            self.create_windows_parallel_script(output_dir, timestamp)
+            if not batch_scripts:
+                print("未找到批处理脚本文件，请先运行triangle_button生成脚本")
+                return
 
-            print(f"主控制脚本已生成在: {output_dir}")
+            # 生成主控制脚本
+            master_script_name = f"master_control_{timestamp}.sh"
+            master_script_path = os.path.join(output_dir, master_script_name)
+
+            # 创建主控制脚本内容
+            script_content = [
+                "#!/bin/bash",
+                "# 主控制脚本 - 并行执行批处理脚本（许可证优化版本）",
+                f"# 自动生成于: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                "",
+                "# 显示Logo",
+                "clear",
+                'echo "================================================================="',
+                'echo "     _____ _____ ____  _____ ____  _______   ____ _____  _   _ "',
+                'echo "    |  ___| ____/ ___||_   _|  _ \\|  ___\\ \\ / /  ___|| \\ | |"',
+                'echo "    | |_  | |__ \\___ \\  | | | |_) | |_   \\ V /| |__  |  \\| |"',
+                'echo "    |  _| |  __| ___) | | | |  _ <|  _|   | | |  __| | . \\` |"',
+                'echo "    |_|   |____||____/  |_| |_| \\_\\_|     |_| |____||_|\\  |_|"',
+                'echo "                                                              "',
+                'echo "            Smart Generator - License Optimized Parallel     "',
+                'echo "================================================================="',
+                'echo "启动并行计算 - 许可证优化版本"',
+                "",
+                "# 确保在正确的目录中执行",
+                'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+                'cd "$script_dir"',
+                'echo "执行目录: $script_dir"',
+                "",
+                "# Abaqus环境设置 - 根据需要取消注释",
+                "# module load abaqus",
+                "",
+                "# 创建错误日志目录",
+                'log_dir="./logs"',
+                'mkdir -p "$log_dir"',
+                'echo "错误日志将保存到: $log_dir"',
+                "",
+                "# 批处理脚本列表"
+            ]
+
+            # 添加脚本文件列表
+            script_content.append("batch_files=(")
+            for script in batch_scripts:
+                script_name = os.path.basename(script)
+                script_content.append(f'    "{script_name}"')
+            script_content.append(")")
+
+            script_content.extend([
+                "",
+                'if [ ${#batch_files[@]} -eq 0 ]; then',
+                '    echo "未找到批处理脚本文件"',
+                '    exit 1',
+                'fi',
+                "",
+                'echo "找到 ${#batch_files[@]} 个批处理脚本，开始并行执行（许可证优化）..."',
+                "",
+                "# 启动所有批处理脚本（添加延迟和进程隔离）",
+                "pids=()",
+                'for i in "${!batch_files[@]}"; do',
+                '    script="${batch_files[$i]}"',
+                '    log_file="$log_dir/group$(($i + 1))_errors.log"',
+                '    echo "启动 $script -> $log_file (延迟 $((i * 10)) 秒)"',
+                "",
+                '    chmod +x "$script"',
+                '    # 错峰启动避免许可证冲突',
+                '    sleep $((i * 10))',
+                '    # 使用setsid创建独立进程组，模拟独立终端',
+                '    setsid ./"$script" > "$log_file" 2>&1 &',
+                '    pids+=($!)',
+                'done',
+                "",
+                "# 监控进度",
+                'echo ""',
+                'echo "监控任务进度 (Ctrl+C 停止监控，不会停止后台任务)..."',
+                'echo "按 \'l\' 查看实时日志，按 \'q\' 退出日志查看"',
+                'echo ""'
+            ])
+
+            # 添加与原脚本相同的监控函数
+            script_content.extend([
+                "",
+                "# 事件驱动监控函数",
+                "monitor_progress() {",
+                "    local last_check_time=$(date +%s)",
+                "    declare -A last_log_sizes",
+                "",
+                "    # 初始化日志文件大小记录",
+                '    for i in "${!batch_files[@]}"; do',
+                '        log_file="$log_dir/group$(($i + 1))_errors.log"',
+                '        if [ -f "$log_file" ]; then',
+                '            last_log_sizes[$i]=$(wc -c < "$log_file" 2>/dev/null || echo 0)',
+                "        else",
+                "            last_log_sizes[$i]=0",
+                "        fi",
+                "    done",
+                "",
+                "    while true; do",
+                "        running=0",
+                "        has_changes=false",
+                "        current_time=$(date +%s)",
+                "",
+                "        # 检查是否有日志文件变化或足够时间过去（最少3秒强制刷新一次）",
+                '        for i in "${!batch_files[@]}"; do',
+                '            log_file="$log_dir/group$(($i + 1))_errors.log"',
+                '            if [ -f "$log_file" ]; then',
+                '                current_size=$(wc -c < "$log_file" 2>/dev/null || echo 0)',
+                '                if [ "$current_size" != "${last_log_sizes[$i]}" ]; then',
+                "                    has_changes=true",
+                "                    last_log_sizes[$i]=$current_size",
+                "                fi",
+                "            fi",
+                "        done",
+                "",
+                "        # 检查进程状态",
+                '        for pid in "${pids[@]}"; do',
+                '            if kill -0 "$pid" 2>/dev/null; then',
+                "                running=$((running + 1))",
+                "            fi",
+                "        done",
+                "",
+                "        if [ $running -eq 0 ]; then",
+                '            echo "$(date \'+%H:%M:%S\') - 所有任务已完成！"',
+                "            break",
+                "        fi",
+                "",
+                "        # 只有当有变化或超过强制刷新间隔时才显示状态",
+                '        if [ "$has_changes" = true ] || [ $((current_time - last_check_time)) -ge 30 ]; then',
+                "            last_check_time=$current_time",
+                "",
+                "            # 显示各任务详细状态",
+                '            echo "$(date \'+%H:%M:%S\') - 任务状态更新:"',
+                '            for i in "${!batch_files[@]}"; do',
+                '                script="${batch_files[$i]}"',
+                '                log_file="$log_dir/group$(($i + 1))_errors.log"',
+                '                pid="${pids[$i]}"',
+                "",
+                '                if kill -0 "$pid" 2>/dev/null; then',
+                '                    status="运行中"',
+                '                    if command -v ps >/dev/null 2>&1; then',
+                '                        runtime=$(ps -p $pid -o etime= 2>/dev/null | tr -d \' \' || echo "未知")',
+                '                        resource_info="(运行时间:${runtime})"',
+                "                    else",
+                '                        resource_info=""',
+                "                    fi",
+                '                    if [ -f "$log_file" ]; then',
+                '                        latest_logs=$(tail -n 3 "$log_file" 2>/dev/null | tr \'\\n\' \' | \' | sed \'s/ | $//\')',
+                '                        if [ -n "$latest_logs" ]; then',
+                '                            log_info="$latest_logs"',
+                "                        else",
+                '                            log_info="日志: 生成中..."',
+                "                        fi",
+                "                    else",
+                '                        log_info="日志: 等待中..."',
+                "                    fi",
+                "                else",
+                '                    status="已完成"',
+                '                    resource_info=""',
+                '                    if [ -f "$log_file" ]; then',
+                '                        if grep -q "SUCCESS:" "$log_file" 2>/dev/null; then',
+                '                            success_count=$(grep -c "SUCCESS:" "$log_file" 2>/dev/null)',
+                '                            log_info="| 状态: 成功完成 (${success_count}个脚本)"',
+                '                        elif grep -q "FAILED:" "$log_file" 2>/dev/null; then',
+                '                            failed_count=$(grep -c "FAILED:" "$log_file" 2>/dev/null)',
+                '                            log_info="| 状态: 发现失败 (${failed_count}个脚本)"',
+                '                        elif grep -q "PARTIAL:" "$log_file" 2>/dev/null; then',
+                '                            partial_count=$(grep -c "PARTIAL:" "$log_file" 2>/dev/null)',
+                '                            log_info="| 状态: 部分完成 (${partial_count}个脚本数据不足)"',
+                "                        else",
+                '                            log_info="| 状态: 运行中或已结束"',
+                "                        fi",
+                "                    else",
+                '                        log_info="| 状态: 无日志"',
+                "                    fi",
+                "                fi",
+                "",
+                '                echo "  Group $(($i + 1)): $status $resource_info"',
+                '                if [ -n "$log_info" ]; then',
+                '                    echo "       $log_info"',
+                "                fi",
+                '                echo ""',
+                "            done",
+                "",
+                '            completion_percent=$(( (${#batch_files[@]} - running) * 100 / ${#batch_files[@]} ))',
+                '            echo "进度: ${completion_percent}% (运行中: $running/${#batch_files[@]})"',
+                '            echo "----------------------------------------"',
+                "        fi",
+                "",
+                "        # 短暂等待以降低CPU使用率",
+                "        sleep 1",
+                "    done",
+                "}",
+                "",
+                "# 启动监控",
+                "monitor_progress",
+                "",
+                'echo ""',
+                'echo "所有批处理任务已完成"',
+                'echo "日志文件位置: $log_dir"',
+                "",
+                "# 生成并行执行总结报告",
+                'summary_file="$log_dir/parallel_summary.log"',
+                'echo "Parallel Execution Summary Report (License Optimized)" > "$summary_file"',
+                'echo "=====================================================" >> "$summary_file"',
+                'echo "Execution completed at: $(date)" >> "$summary_file"',
+                'echo "Total parallel batches: ${#batch_files[@]}" >> "$summary_file"',
+                'echo "License optimization: Staggered start + Process isolation" >> "$summary_file"',
+                'echo "Log directory: $log_dir" >> "$summary_file"',
+                'echo "" >> "$summary_file"',
+                "",
+                'echo "检查各任务完成情况:"',
+                "completed_count=0",
+                "error_count=0",
+                'for i in "${!batch_files[@]}"; do',
+                '    log_file="$log_dir/group$(($i + 1))_errors.log"',
+                "    batch_num=$(($i + 1))",
+                "",
+                '    if [ -f "$log_file" ]; then',
+                '        if grep -q "SUCCESS:" "$log_file" 2>/dev/null; then',
+                "            completed_count=$((completed_count + 1))",
+                '            success_count=$(grep -c "SUCCESS:" "$log_file" 2>/dev/null)',
+                '            echo "  Group $batch_num: 成功完成 (${success_count}个脚本) - 日志: $log_file"',
+                '            echo "Group $batch_num: SUCCESS" >> "$summary_file"',
+                '        elif grep -q "FAILED:" "$log_file" 2>/dev/null; then',
+                "            error_count=$((error_count + 1))",
+                '            failed_count=$(grep -c "FAILED:" "$log_file" 2>/dev/null)',
+                '            echo "  Group $batch_num: 发现失败 (${failed_count}个脚本) - 日志: $log_file"',
+                '            echo "Group $batch_num: ERROR" >> "$summary_file"',
+                "        else",
+                '            echo "  Group $batch_num: 状态未知 - 日志: $log_file"',
+                '            echo "Group $batch_num: UNKNOWN" >> "$summary_file"',
+                "        fi",
+                "    else",
+                '        echo "  Group $batch_num: 无日志文件"',
+                '        echo "Group $batch_num: NO_LOG" >> "$summary_file"',
+                "    fi",
+                "done",
+                "",
+                'echo "" >> "$summary_file"',
+                'echo "Summary:" >> "$summary_file"',
+                'echo "  Completed: $completed_count" >> "$summary_file"',
+                'echo "  Errors: $error_count" >> "$summary_file"',
+                'echo "  Total: ${#batch_files[@]}" >> "$summary_file"',
+                "",
+                'echo ""',
+                'echo "总结: 成功=$completed_count, 错误=$error_count, 总计=${#batch_files[@]}"',
+                'echo "详细报告已保存到: $summary_file"'
+            ])
+
+            # 写入主控制脚本文件
+            with open(master_script_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(script_content))
+
+            # 设置执行权限
+            import stat
+            os.chmod(master_script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IROTH)
+
+            print(f"主控制脚本已生成: {master_script_path}")
+            print(f"找到 {len(batch_scripts)} 个批处理脚本:")
+            for i, script in enumerate(batch_scripts):
+                print(f"  Group {i+1}: {os.path.basename(script)}")
+            print(f"\n执行命令: ./{master_script_name}")
+            print("特性: 错峰启动(10秒间隔) + 进程隔离，确保许可证使用受控")
 
         except Exception as e:
             print(f"生成主控制脚本时出错: {str(e)}")
 
-    def create_linux_parallel_script(self, output_dir, timestamp):
-        """创建Linux并行执行脚本"""
-        # tmux版本
-        tmux_script_path = os.path.join(output_dir, f"run_parallel_tmux_{timestamp}.sh")
-        tmux_content = """#!/bin/bash
-# 并行执行批处理脚本 - tmux版本
-echo "启动并行计算 - 使用tmux多窗格监控"
+    def generate_pbs_script(self):
+        """生成PBS脚本文件"""
+        try:
+            from datetime import datetime
+            import glob
 
-# 检查tmux是否安装
-if ! command -v tmux &> /dev/null; then
-    echo "错误: tmux未安装，请先安装tmux或使用简单并行版本"
-    exit 1
-fi
+            # 使用task文件夹作为输出目录
+            if not hasattr(self, 'current_task_dir'):
+                print("错误: 未找到任务文件夹")
+                return
 
-# 查找所有批处理脚本
-batch_files=($(ls run_all_scripts_*.sh 2>/dev/null))
+            output_dir = self.current_task_dir
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-if [ ${#batch_files[@]} -eq 0 ]; then
-    echo "未找到批处理脚本文件"
-    exit 1
-fi
+            # 查找最新生成的run_all脚本
+            run_all_pattern = os.path.join(output_dir, "run_all_*.sh")
+            run_all_scripts = glob.glob(run_all_pattern)
 
-echo "找到 ${#batch_files[@]} 个批处理脚本"
+            if not run_all_scripts:
+                print("未找到run_all脚本文件，无法生成PBS脚本")
+                return
 
-# 创建tmux会话
-session_name="abaqus_parallel_$(date +%s)"
-tmux new-session -d -s "$session_name"
+            # 选择最新的run_all脚本
+            run_all_scripts.sort()
+            latest_run_all_script = run_all_scripts[-1]
+            run_all_script_name = os.path.basename(latest_run_all_script)
 
-# 根据脚本数量创建窗格
-for i in $(seq 1 $((${#batch_files[@]} - 1))); do
-    if [ $i -eq 1 ] || [ $i -eq 3 ] || [ $i -eq 5 ]; then
-        tmux split-window -h
-    else
-        tmux split-window -v
-    fi
-    if [ $i -gt 1 ]; then
-        tmux select-pane -t $(($i - 1))
-    fi
-done
+            # 生成PBS脚本名称 (使用run_all脚本的配置名称)
+            config_name = run_all_script_name.replace("run_all_", "").replace(".sh", "")
+            pbs_script_name = f"pbs_submit_{config_name}.pbs"
+            pbs_script_path = os.path.join(output_dir, pbs_script_name)
 
-# 在每个窗格中运行批处理脚本
-for i in "${!batch_files[@]}"; do
-    echo "启动窗格 $i: ${batch_files[$i]}"
-    tmux send-keys -t "$i" "cd $(pwd) && chmod +x ${batch_files[$i]} && ./${batch_files[$i]}" Enter
-done
+            # 获取task文件夹的名称(例如: task_20250930_123456)
+            task_folder_name = os.path.basename(output_dir)
 
-echo "所有任务已启动"
-echo "使用以下命令监控进度:"
-echo "  tmux attach-session -t $session_name"
-echo "使用 Ctrl+B 然后 D 来分离会话"
-echo "使用以下命令终止所有任务:"
-echo "  tmux kill-session -t $session_name"
-"""
+            # 获取generate_script的绝对路径
+            generate_script_dir = os.path.dirname(output_dir)
 
-        # 简单并行版本
-        simple_script_path = os.path.join(output_dir, f"run_parallel_simple_{timestamp}.sh")
-        simple_content = """#!/bin/bash
-# 并行执行批处理脚本 - 简单版本
-echo "启动并行计算 - 带日志监控"
+            # 创建logs目录
+            logs_dir = os.path.join(output_dir, "logs")
+            if not os.path.exists(logs_dir):
+                os.makedirs(logs_dir)
+                print(f"已创建日志目录: {logs_dir}")
 
-# 创建日志目录
-log_dir="./logs/$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$log_dir"
-echo "日志将保存到: $log_dir"
+            # 创建PBS脚本内容
+            pbs_content = [
+                "#!/bin/bash",
+                f"#PBS -N abaqus_{config_name}",
+                "#PBS -P as_mae_kzhou",
+                "#PBS -q qintel_wfly",
+                "#PBS -l walltime=168:00:00",
+                "#PBS -l select=1:ncpus=8:mem=64gb",
+                "#PBS -j oe",
+                f"#PBS -o {Config.BASE_SCRIPT_PATH}/{task_folder_name}/logs/run_all_{config_name}.log",
+                "",
+                "cd $PBS_O_WORKDIR",
+                "",
+                "# Setup real-time logging",
+                f"LOGDIR=\"{Config.BASE_SCRIPT_PATH}/{task_folder_name}/logs\"",
+                "mkdir -p $LOGDIR",
+                f"REALTIME_LOG=\"$LOGDIR/realtime_{config_name}_$PBS_JOBID.log\"",
+                "",
+                "# Execute with real-time output",
+                f'bash "{Config.BASE_SCRIPT_PATH}/{task_folder_name}/{run_all_script_name}" 2>&1 | tee "$REALTIME_LOG" &',
+                "wait",
+                'echo "Abaqus tasks finished."'
+            ]
 
-# 查找所有批处理脚本
-batch_files=($(ls run_all_scripts_*.sh 2>/dev/null))
+            # 写入PBS脚本文件
+            with open(pbs_script_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(pbs_content))
 
-if [ ${#batch_files[@]} -eq 0 ]; then
-    echo "未找到批处理脚本文件"
-    exit 1
-fi
+            # 设置执行权限
+            import stat
+            os.chmod(pbs_script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IROTH)
 
-echo "找到 ${#batch_files[@]} 个批处理脚本，开始并行执行..."
+            print(f"PBS脚本已生成: {pbs_script_path}")
+            print(f"关联的run_all脚本: {run_all_script_name}")
+            print(f"提交命令: qsub {pbs_script_name}")
 
-# 启动所有批处理脚本
-pids=()
-for i in "${!batch_files[@]}"; do
-    script="${batch_files[$i]}"
-    log_file="$log_dir/batch_$(($i + 1)).log"
-    echo "启动 $script -> $log_file"
+        except Exception as e:
+            print(f"生成PBS脚本时出错: {str(e)}")
 
-    chmod +x "$script"
-    ./"$script" > "$log_file" 2>&1 &
-    pids+=($!)
-done
 
-# 监控进度
-echo ""
-echo "监控任务进度 (Ctrl+C 停止监控，不会停止后台任务)..."
-while true; do
-    running=0
-    for pid in "${pids[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            running=$((running + 1))
-        fi
-    done
-
-    if [ $running -eq 0 ]; then
-        echo "所有任务已完成！"
-        break
-    fi
-
-    echo "$(date '+%H:%M:%S') - 运行中的任务: $running/${#batch_files[@]}"
-    sleep 10
-done
-
-echo ""
-echo "所有批处理任务已完成"
-echo "日志文件位置: $log_dir"
-echo "检查各任务完成情况:"
-for i in "${!batch_files[@]}"; do
-    log_file="$log_dir/batch_$(($i + 1)).log"
-    if [ -f "$log_file" ]; then
-        echo "  批次 $(($i + 1)): $(tail -n 1 "$log_file" | grep -o 'completed\\|failed\\|ERROR' || echo '进行中')"
-    fi
-done
-"""
-
-        # 写入脚本文件
-        with open(tmux_script_path, 'w', encoding='utf-8') as f:
-            f.write(tmux_content)
-
-        with open(simple_script_path, 'w', encoding='utf-8') as f:
-            f.write(simple_content)
-
-        # 设置执行权限
-        import stat
-        os.chmod(tmux_script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IROTH)
-        os.chmod(simple_script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IROTH)
-
-        print(f"Linux并行脚本已生成:")
-        print(f"  tmux版本: {os.path.basename(tmux_script_path)}")
-        print(f"  简单版本: {os.path.basename(simple_script_path)}")
-
-    def create_windows_parallel_script(self, output_dir, timestamp):
-        """创建Windows并行执行脚本"""
-        script_path = os.path.join(output_dir, f"run_parallel_{timestamp}.bat")
-
-        content = """@echo off
-setlocal enabledelayedexpansion
-
-echo 启动并行计算 - Windows版本
-
-rem 创建日志目录
-set "log_dir=logs\\%date:~0,4%%date:~5,2%%date:~8,2%_%time:~0,2%%time:~3,2%%time:~6,2%"
-set "log_dir=%log_dir: =0%"
-mkdir "%log_dir%" 2>nul
-echo 日志将保存到: %log_dir%
-
-rem 查找所有批处理脚本
-set batch_count=0
-for %%f in (run_all_scripts_*.bat) do (
-    set /a batch_count+=1
-    set "batch_file[!batch_count!]=%%f"
-)
-
-if %batch_count%==0 (
-    echo 未找到批处理脚本文件
-    pause
-    exit /b 1
-)
-
-echo 找到 %batch_count% 个批处理脚本，开始并行执行...
-
-rem 启动所有批处理脚本
-for /l %%i in (1,1,%batch_count%) do (
-    set "script=!batch_file[%%i]!"
-    set "log_file=%log_dir%\\batch_%%i.log"
-    echo 启动 !script! -^> !log_file!
-    start "Batch_%%i" /min cmd /c "!script! > !log_file! 2>&1"
-)
-
-echo.
-echo 所有任务已启动，正在监控进度...
-echo 使用任务管理器可以查看 cmd.exe 进程状态
-echo.
-
-rem 简单监控（检查窗口）
-:monitor
-timeout /t 10 >nul
-set running=0
-
-rem 检查是否还有批处理进程在运行
-tasklist /fi "windowtitle eq Batch_*" 2>nul | find /i "cmd.exe" >nul
-if %errorlevel%==0 (
-    echo %time% - 还有批处理任务在运行中...
-    goto monitor
-)
-
-echo.
-echo 所有批处理任务已完成！
-echo 日志文件位置: %log_dir%
-echo.
-echo 检查各任务完成情况:
-for /l %%i in (1,1,%batch_count%) do (
-    set "log_file=%log_dir%\\batch_%%i.log"
-    if exist "!log_file!" (
-        echo   批次 %%i: 检查日志文件 !log_file!
-    )
-)
-
-echo.
-echo 按任意键退出...
-pause
-"""
-
-        # 写入脚本文件
-        with open(script_path, 'w', encoding='ascii', errors='ignore') as f:
-            f.write(content)
-
-        print(f"Windows并行脚本已生成: {os.path.basename(script_path)}")
 
     def update_button_style(self, checked):
         """Update generate button style when slider checkbox state changes"""
@@ -1429,6 +1672,36 @@ pause
                     stop:0 #ff7043, stop:1 #8e24aa);
                 border-radius: 5px;
             }
+
+            #batch_config_button {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ff7043, stop:1 #8e24aa);
+                color: #fce4ec;
+                border: 2px solid #6a1b9a;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-weight: normal;
+                font-size: 11px;
+                min-width: 80px;
+                max-height: 24px;
+            }
+
+            #batch_config_button:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #ff8a65, stop:1 #ab47bc);
+                border-color: #8e24aa;
+            }
+
+            #batch_config_button:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #e64a19, stop:1 #6a1b9a);
+            }
+
+            #batch_config_button:disabled {
+                background: #757575;
+                color: #bdbdbd;
+                border-color: #424242;
+            }
         """
 
     def get_forest_stylesheet(self):
@@ -1587,6 +1860,36 @@ pause
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                     stop:0 #4caf50, stop:1 #2e7d32);
                 border-radius: 5px;
+            }
+
+            #batch_config_button {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #4caf50, stop:1 #2e7d32);
+                color: #e8f5e8;
+                border: 2px solid #1b5e20;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-weight: normal;
+                font-size: 11px;
+                min-width: 80px;
+                max-height: 24px;
+            }
+
+            #batch_config_button:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #66bb6a, stop:1 #43a047);
+                border-color: #2e7d32;
+            }
+
+            #batch_config_button:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #388e3c, stop:1 #1b5e20);
+            }
+
+            #batch_config_button:disabled {
+                background: #757575;
+                color: #bdbdbd;
+                border-color: #424242;
             }
         """
 
@@ -1772,6 +2075,36 @@ pause
                     stop:0 #3498db, stop:1 #2980b9);
                 border-radius: 5px;
             }
+
+            #batch_config_button {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #3498db, stop:1 #2c3e50);
+                color: #ecf0f1;
+                border: 2px solid #34495e;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-weight: normal;
+                font-size: 11px;
+                min-width: 80px;
+                max-height: 24px;
+            }
+
+            #batch_config_button:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #5dade2, stop:1 #34495e);
+                border-color: #3498db;
+            }
+
+            #batch_config_button:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #2980b9, stop:1 #2c3e50);
+            }
+
+            #batch_config_button:disabled {
+                background: #757575;
+                color: #bdbdbd;
+                border-color: #424242;
+            }
         """
 
     def get_stylesheet(self):
@@ -1912,84 +2245,81 @@ pause
                 background: #2980b9;
             }
 
-            #slider {
-                min-height: 30px;
-                min-width: 280px;
-                background: transparent;
-            }
+        #slider {
+            height: 25px;
+            background: transparent;
+        }
 
-            /* Normal state - 浅紫色主题，无边框 */
-            #slider::groove:horizontal {
-                border: none;
-                height: 10px;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #f3e5f5, stop:1 #e1bee7);
-                border-radius: 5px;
-            }
+        #slider::groove:horizontal {
+            border: none;
+            height: 8px;
+            background: rgba(255, 255, 255, 100);
+            border-radius: 4px;
+        }
 
-            #slider::handle:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ce93d8, stop:1 #ba68c8);
-                border: none;
-                width: 22px;
-                height: 22px;
-                margin: -8px 0;
-                border-radius: 13px;
-            }
+        #slider::handle:horizontal {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #ffffff, stop:1 #e0e0e0);
+            border: 2px solid #cccccc;
+            width: 20px;
+            height: 20px;
+            margin: -8px 0;
+            border-radius: 12px;
+        }
 
-            #slider::handle:horizontal:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ba68c8, stop:1 #ab47bc);
-            }
+        #slider::handle:horizontal:hover {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #f0f0f0, stop:1 #d0d0d0);
+            border: 2px solid #aaaaaa;
+        }
 
-            #slider::handle:horizontal:pressed {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #6a1b9a, stop:1 #4a148c);
-            }
+        #slider::handle:horizontal:pressed {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #e0e0e0, stop:1 #c0c0c0);
+            border: 2px solid #888888;
+        }
 
-            #slider:focus::handle:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #6a1b9a, stop:1 #4a148c);
-            }
+        #slider::sub-page:horizontal {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #9c27b0, stop:1 #7b1fa2);
+            border-radius: 4px;
+        }
 
-            #slider::sub-page:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ce93d8, stop:1 #ba68c8);
-                border-radius: 5px;
-            }
+        #slider::add-page:horizontal {
+            background: rgba(255, 255, 255, 100);
+            border-radius: 4px;
+        }
 
-            #slider:focus::sub-page:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #8e24aa, stop:1 #6a1b9a);
-                border-radius: 5px;
-            }
+        #slider:focus::sub-page:horizontal {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #8e24aa, stop:1 #6a1b9a);
+            border-radius: 5px;
+        }
 
-            /* Disabled state - 完全灰色主题 */
-            #slider:disabled {
-                opacity: 0.7;
-            }
+        /* Disabled state - 完全灰色主题 */
+        #slider:disabled {
+            opacity: 0.7;
+        }
 
-            #slider:disabled::groove:horizontal {
-                border: none;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #ecf0f1, stop:1 #d5dbdb);
-                color: #7f8c8d;
-            }
+        #slider:disabled::groove:horizontal {
+            background: rgba(189, 195, 199, 100);
+            border-radius: 4px;
+        }
 
-            #slider:disabled::handle:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #bdc3c7, stop:1 #95a5a6);
-                border: none;
-            }
+        #slider:disabled::handle:horizontal {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #bdc3c7, stop:1 #95a5a6);
+            border: none;
+        }
 
-            #slider:disabled::sub-page:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #95a5a6, stop:1 #7f8c8d);
-            }
+        #slider:disabled::sub-page:horizontal {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #95a5a6, stop:1 #7f8c8d);
+        }
 
-            #slider:disabled::add-page:horizontal {
-                background: #ecf0f1;
-            }
+        #slider:disabled::add-page:horizontal {
+            background: #ecf0f1;
+        }
         """
 
 

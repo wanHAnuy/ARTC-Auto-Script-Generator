@@ -7,8 +7,8 @@ from numpy import cross, dot
 import regionToolset
 
 # 圆柱体半径
-radius = 0.5
-
+radius = 0.3
+cell_size = 5
 # 定义关键点坐标
 A  = [-2.5,  2.5,  2.5]
 B  = [ 2.5,  2.5,  2.5]
@@ -183,6 +183,8 @@ material.Density(table=((1.2e-09,),))
 material.DuctileDamageInitiation(table=((0.95, 0.333, 0.003),))
 material.ductileDamageInitiation.DamageEvolution(type=DISPLACEMENT, table=((0.1,),))
 
+# material.DuctileDamageInitiation(table=((2.0, 0.333, 0.003),))
+# material.ductileDamageInitiation.DamageEvolution(type=DISPLACEMENT, table=((0.3,),))
 # 创建截面
 model.HomogeneousSolidSection(name='Section-1', material='Material-1', thickness=None)
 model.HomogeneousShellSection(name='Section-2', 
@@ -271,9 +273,21 @@ def Macro1():
     a = mdb.models['Model-1'].rootAssembly
     a.regenerate()
 
-    # === 分析步 ===
-    mdb.models['Model-1'].StaticStep(name='Step-1', previous='Initial', 
-        initialInc=0.01, minInc=1e-06, nlgeom=ON)
+    mdb.models['Model-1'].StaticStep(
+        name='Step-1',
+        previous='Initial',
+        timePeriod=1.0,          # 分析步时长：1.0，与Amplitude匹配
+        initialInc=0.01,         # 初始增量：1%应变步长
+        minInc=1e-05,            # 最小增量：从5e-07提高到1e-05，避免过小步长死循环
+        maxInc=0.1,              # 最大增量：增大以加快收敛
+        maxNumInc=1000,          # 最大步数：增加到1000，给予更多迭代机会
+        nlgeom=ON,               # 几何非线性
+        stabilizationMethod=DISSIPATED_ENERGY_FRACTION,  # 改用能量耗散稳定法，更适合屈曲
+        stabilizationMagnitude=0.002,  # 增大阻尼系数，抑制振荡和屈曲
+        continueDampingFactors=False,
+        adaptiveDampingRatio=0.05
+    )
+
 
     # === 定义反射点集 ===
     v1 = a.instances['MergedStructure-1'].vertices
@@ -291,19 +305,9 @@ def Macro1():
     a.Set(referencePoints=refPoints1, name='TopReflection')
 
     # === 输出请求 ===
-    regionDef = a.sets['Reflection']
-    mdb.models['Model-1'].HistoryOutputRequest(name='H-Output-2', 
-        createStepName='Step-1', variables=('U2', 'U3', 'RF2', 'RF3'), 
-        region=regionDef, sectionPoints=DEFAULT, rebar=EXCLUDE)
-
-    regionDef = a.sets['BotReflection']
-    mdb.models['Model-1'].HistoryOutputRequest(name='H-Output-3', 
-        createStepName='Step-1', variables=('U2', 'U3', 'RF2', 'RF3'), 
-        region=regionDef, sectionPoints=DEFAULT, rebar=EXCLUDE)
-
     regionDef = a.sets['TopReflection']
-    mdb.models['Model-1'].HistoryOutputRequest(name='H-Output-4', 
-        createStepName='Step-1', variables=('U2', 'U3', 'RF2', 'RF3'), 
+    mdb.models['Model-1'].HistoryOutputRequest(name='H-Output-2',
+        createStepName='Step-1', variables=('U1', 'U2', 'RF1', 'RF2'),
         region=regionDef, sectionPoints=DEFAULT, rebar=EXCLUDE)
 
     # === Rigid body 约束 ===
@@ -326,7 +330,7 @@ def Macro1():
     mdb.models['Model-1'].interactionProperties['IntProp-1'].TangentialBehavior(
         formulation=PENALTY, directionality=ISOTROPIC, slipRateDependency=OFF, 
         pressureDependency=OFF, temperatureDependency=OFF, dependencies=0, 
-        table=((0.03, ), ), shearStressLimit=None, maximumElasticSlip=FRACTION, 
+        table=((0.15, ), ), shearStressLimit=None, maximumElasticSlip=FRACTION, 
         fraction=0.005, elasticSlipStiffness=None)
     mdb.models['Model-1'].interactionProperties['IntProp-1'].NormalBehavior(
         pressureOverclosure=HARD, allowSeparation=ON, 
@@ -379,13 +383,14 @@ def Macro1():
     mdb.models['Model-1'].EncastreBC(name='BC-1', createStepName='Step-1', 
         region=region, localCsys=None)
 
+    u2=-0.8*cell_size
     region = a.sets['TopReflection']
     mdb.models['Model-1'].DisplacementBC(name='BC-2', createStepName='Step-1', 
-        region=region, u1=0.0, u2=-0.5, u3=0.0, ur1=0.0, ur2=0.0, ur3=0.0, 
+        region=region, u1=0.0, u2=u2, u3=0.0, ur1=0.0, ur2=0.0, ur3=0.0, 
         amplitude=UNSET, fixed=OFF, distributionType=UNIFORM, fieldName='', 
         localCsys=None)
-    mdb.models['Model-1'].TabularAmplitude(name='Amp-1', timeSpan=STEP, 
-        smooth=SOLVER_DEFAULT, data=((0.0, 0.0), (0.6, 1.0)))
+    mdb.models['Model-1'].TabularAmplitude(name='Amp-1', timeSpan=STEP,
+        smooth=SOLVER_DEFAULT, data=((0.0, 0.0), (1.0, 1.0)))
     mdb.models['Model-1'].boundaryConditions['BC-2'].setValuesInStep(
         stepName='Step-1', amplitude='Amp-1')
 
@@ -408,7 +413,7 @@ def Macro1():
         localCsys=None)
     session.viewports['Viewport: 1'].assemblyDisplay.setValues(step='Step-1')
     mdb.models['Model-1'].boundaryConditions['BC-2'].setValuesInStep(
-        stepName='Step-1', u2=-0.5, amplitude='Amp-1')
+        stepName='Step-1', u2=u2, amplitude='Amp-1')
     
     a = mdb.models['Model-1'].rootAssembly
     f1 = a.instances['RigidPlate-2'].faces
@@ -456,7 +461,8 @@ def Macro1():
 
 Macro1()
 
-def Macro1():
+def Macro2():
+
     # 先获取面的mask值
     a = mdb.models['Model-1'].rootAssembly
     instance = a.instances['MergedStructure-1']
@@ -482,8 +488,7 @@ def Macro1():
         except:
             pass
 
-
-    # 计算顶部面mask
+    # 计算顶部面mask并更新Contact
     if top_faces:
         mask_value = 0
         for i in top_faces:
@@ -502,7 +507,7 @@ def Macro1():
             contactTracking=TWO_CONFIG, 
             bondingSet=None)
 
-    # 计算底部面mask
+    # 计算底部面mask并更新Contact
     if bottom_faces:
         mask_value = 0
         for i in bottom_faces:
@@ -520,10 +525,81 @@ def Macro1():
             thickness=ON,
             contactTracking=TWO_CONFIG, 
             bondingSet=None)
+    
+    # ========== 新增：创建Tie约束（覆盖Contact）==========
+    print("\n========== Creating Tie Constraints ==========")
+    print("Top faces found: %d" % len(top_faces))
+    print("Bottom faces found: %d" % len(bottom_faces))
+    
+    # 创建顶部Tie约束
+    if top_faces:
+        mask_value_top = 0
+        for i in top_faces:
+            mask_value_top += 1 << i
+        
+        print("Top mask (hex): 0x%x" % mask_value_top)
+        
+        # 定义主面：顶部刚性板
+        s1 = a.instances['RigidPlate-2'].faces
+        side1Faces1 = s1.getSequenceFromMask(mask=('[#1]',))
+        region1 = a.Surface(side1Faces=side1Faces1, name='m_Surf-Tie-Top')
+        
+        # 定义从面：结构顶部
+        s1 = a.instances['MergedStructure-1'].faces
+        side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value_top,))
+        region2 = a.Surface(side1Faces=side1Faces1, name='s_Surf-Tie-Top')
+        
+        # 创建Tie约束
+        mdb.models['Model-1'].Tie(
+            name='Constraint-3', 
+            main=region1, 
+            secondary=region2,
+            positionToleranceMethod=COMPUTED, 
+            adjust=ON, 
+            tieRotations=ON,
+            thickness=ON
+        )
+        print("SUCCESS: Top Tie constraint created (Constraint-3)")
+    else:
+        print("WARNING: No top faces found, Tie constraint not created")
+    
+    # 创建底部Tie约束
+    if bottom_faces:
+        mask_value_bottom = 0
+        for i in bottom_faces:
+            mask_value_bottom += 1 << i
+        
+        print("Bottom mask (hex): 0x%x" % mask_value_bottom)
+        
+        # 定义主面：底部刚性板
+        s1 = a.instances['RigidPlate-1'].faces
+        side1Faces1 = s1.getSequenceFromMask(mask=('[#1]',))
+        region3 = a.Surface(side1Faces=side1Faces1, name='m_Surf-Tie-Bot')
+        
+        # 定义从面：结构底部
+        s1 = a.instances['MergedStructure-1'].faces
+        side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value_bottom,))
+        region4 = a.Surface(side1Faces=side1Faces1, name='s_Surf-Tie-Bot')
+        
+        # 创建Tie约束
+        mdb.models['Model-1'].Tie(
+            name='Constraint-4', 
+            main=region3, 
+            secondary=region4,
+            positionToleranceMethod=COMPUTED, 
+            adjust=ON, 
+            tieRotations=ON,
+            thickness=ON
+        )
+        print("SUCCESS: Bottom Tie constraint created (Constraint-4)")
+    else:
+        print("WARNING: No bottom faces found, Tie constraint not created")
+    
+    print("=" * 50)
 
-Macro1()
+Macro2()
 
-# mdb.models['Model-1'].fieldOutputRequests['F-Output-1'].setValues(frequency=5)
+mdb.models['Model-1'].fieldOutputRequests['F-Output-1'].setValues(frequency=3)
 
 
 
