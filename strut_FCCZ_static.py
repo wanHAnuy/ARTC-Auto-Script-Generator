@@ -471,130 +471,97 @@ def Macro2():
     top_faces = []    # 法向量(0,1,0)
     bottom_faces = [] # 法向量(0,-1,0)
 
-    for i in range(len(faces)):
-        face = faces[i]
+    # 使用face对象而不是索引,避免mask的bit位置和索引不对应
+    for face in faces:
         try:
             normal = face.getNormal()
             # 允许0.01的误差
-            if (abs(normal[0]) < 0.01 and 
-                abs(normal[1] - 1.0) < 0.01 and 
+            if (abs(normal[0]) < 0.01 and
+                abs(normal[1] - 1.0) < 0.01 and
                 abs(normal[2]) < 0.01):
-                top_faces.append(i)
-                
-            elif (abs(normal[0]) < 0.01 and 
-                  abs(normal[1] + 1.0) < 0.01 and 
+                top_faces.append(face)
+
+            elif (abs(normal[0]) < 0.01 and
+                  abs(normal[1] + 1.0) < 0.01 and
                   abs(normal[2]) < 0.01):
-                bottom_faces.append(i)
+                bottom_faces.append(face)
         except:
             pass
 
-    # 计算顶部面mask并更新Contact
-    if top_faces:
-        mask_value = 0
-        for i in top_faces:
-            mask_value += 1 << i
-        
-        s1 = a.instances['MergedStructure-1'].faces
-        side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value,))
-        region2 = a.Surface(side1Faces=side1Faces1, name='s_Surf-5')
-        mdb.models['Model-1'].interactions['Int-1'].setValues(
-            secondary=region2,
-            initialClearance=OMIT, 
-            adjustMethod=NONE, 
-            sliding=FINITE,
-            enforcement=SURFACE_TO_SURFACE, 
-            thickness=ON,
-            contactTracking=TWO_CONFIG, 
-            bondingSet=None)
-
-    # 计算底部面mask并更新Contact
-    if bottom_faces:
-        mask_value = 0
-        for i in bottom_faces:
-            mask_value += 1 << i
-            
-        s1 = a.instances['MergedStructure-1'].faces
-        side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value,))
-        region2 = a.Surface(side1Faces=side1Faces1, name='s_Surf-6')
-        mdb.models['Model-1'].interactions['Int-2'].setValues(
-            secondary=region2,
-            initialClearance=OMIT, 
-            adjustMethod=NONE, 
-            sliding=FINITE,
-            enforcement=SURFACE_TO_SURFACE, 
-            thickness=ON,
-            contactTracking=TWO_CONFIG, 
-            bondingSet=None)
-    
-    # ========== 新增：创建Tie约束（覆盖Contact）==========
     print("\n========== Creating Tie Constraints ==========")
     print("Top faces found: %d" % len(top_faces))
     print("Bottom faces found: %d" % len(bottom_faces))
-    
+
     # 创建顶部Tie约束
     if top_faces:
-        mask_value_top = 0
-        for i in top_faces:
-            mask_value_top += 1 << i
-        
-        print("Top mask (hex): 0x%x" % mask_value_top)
-        
         # 定义主面：顶部刚性板
         s1 = a.instances['RigidPlate-2'].faces
         side1Faces1 = s1.getSequenceFromMask(mask=('[#1]',))
         region1 = a.Surface(side1Faces=side1Faces1, name='m_Surf-Tie-Top')
-        
-        # 定义从面：结构顶部
+
+        # 定义从面：结构顶部 - 使用findAt通过face中心点重新获取
         s1 = a.instances['MergedStructure-1'].faces
-        side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value_top,))
-        region2 = a.Surface(side1Faces=side1Faces1, name='s_Surf-Tie-Top')
-        
-        # 创建Tie约束
-        mdb.models['Model-1'].Tie(
-            name='Constraint-3', 
-            main=region1, 
-            secondary=region2,
-            positionToleranceMethod=COMPUTED, 
-            adjust=ON, 
-            tieRotations=ON,
-            thickness=ON
-        )
-        print("SUCCESS: Top Tie constraint created (Constraint-3)")
+        try:
+            # 收集所有顶面
+            found_top_faces = []
+            for face in top_faces:
+                face_center = face.pointOn[0]
+                found_face = s1.findAt((face_center,))
+                found_top_faces.append(found_face)
+
+            region2 = a.Surface(side1Faces=found_top_faces, name='s_Surf-Tie-Top')
+
+            # 创建Tie约束
+            mdb.models['Model-1'].Tie(
+                name='Constraint-3',
+                main=region1,
+                secondary=region2,
+                positionToleranceMethod=COMPUTED,
+                adjust=ON,
+                tieRotations=ON,
+                thickness=ON
+            )
+            print("SUCCESS: Top Tie constraint created (Constraint-3)")
+        except Exception as e:
+            print("ERROR: Failed to create top Tie constraint: %s" % str(e))
     else:
         print("WARNING: No top faces found, Tie constraint not created")
-    
+
     # 创建底部Tie约束
     if bottom_faces:
-        mask_value_bottom = 0
-        for i in bottom_faces:
-            mask_value_bottom += 1 << i
-        
-        print("Bottom mask (hex): 0x%x" % mask_value_bottom)
-        
         # 定义主面：底部刚性板
         s1 = a.instances['RigidPlate-1'].faces
         side1Faces1 = s1.getSequenceFromMask(mask=('[#1]',))
         region3 = a.Surface(side1Faces=side1Faces1, name='m_Surf-Tie-Bot')
-        
-        # 定义从面：结构底部
+
+        # 定义从面：结构底部 - 使用findAt通过face中心点重新获取
         s1 = a.instances['MergedStructure-1'].faces
-        side1Faces1 = s1.getSequenceFromMask(mask=('[#%x]' % mask_value_bottom,))
-        region4 = a.Surface(side1Faces=side1Faces1, name='s_Surf-Tie-Bot')
-        
-        # 创建Tie约束
-        mdb.models['Model-1'].Tie(
-            name='Constraint-4', 
-            main=region3, 
-            secondary=region4,
-            positionToleranceMethod=COMPUTED, 
-            adjust=ON, 
-            tieRotations=ON,
-            thickness=ON
-        )
-        print("SUCCESS: Bottom Tie constraint created (Constraint-4)")
+        try:
+            # 收集所有底面
+            found_bottom_faces = []
+            for face in bottom_faces:
+                face_center = face.pointOn[0]
+                found_face = s1.findAt((face_center,))
+                found_bottom_faces.append(found_face)
+
+            region4 = a.Surface(side1Faces=found_bottom_faces, name='s_Surf-Tie-Bot')
+
+            # 创建Tie约束
+            mdb.models['Model-1'].Tie(
+                name='Constraint-4',
+                main=region3,
+                secondary=region4,
+                positionToleranceMethod=COMPUTED,
+                adjust=ON,
+                tieRotations=ON,
+                thickness=ON
+            )
+            print("SUCCESS: Bottom Tie constraint created (Constraint-4)")
+        except Exception as e:
+            print("ERROR: Failed to create bottom Tie constraint: %s" % str(e))
     else:
         print("WARNING: No bottom faces found, Tie constraint not created")
-    
+
     print("=" * 50)
 
 Macro2()
