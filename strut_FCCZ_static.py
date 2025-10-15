@@ -383,7 +383,7 @@ def Macro1():
     mdb.models['Model-1'].EncastreBC(name='BC-1', createStepName='Step-1', 
         region=region, localCsys=None)
 
-    u2=-0.8*cell_size
+    u2=-0.4*cell_size
     region = a.sets['TopReflection']
     mdb.models['Model-1'].DisplacementBC(name='BC-2', createStepName='Step-1', 
         region=region, u1=0.0, u2=u2, u3=0.0, ur1=0.0, ur2=0.0, ur3=0.0, 

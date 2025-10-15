@@ -590,8 +590,19 @@ def collect_feature_data_to_json_advanced(root_folder, output_file="feature_data
                     force = parsed_data["force"]
 
                     # 保存第一个文件的density
-                    if density_value is None and parsed_data["density"] is not None:
-                        density_value = parsed_data["density"]
+                    if density_value is None:
+                        # 先检查同路径下是否有 density_temp.txt
+                        density_temp_file = feature_file.parent / "density_temp.txt"
+                        if density_temp_file.exists():
+                            try:
+                                density_content = density_temp_file.read_text(encoding='utf-8', errors='ignore').strip()
+                                density_value = float(density_content)
+                            except (ValueError, Exception) as e:
+                                print(f"读取 {density_temp_file} 失败: {e}，使用原始逻辑")
+                                if parsed_data["density"] is not None:
+                                    density_value = parsed_data["density"]
+                        elif parsed_data["density"] is not None:
+                            density_value = parsed_data["density"]
 
                     # 处理X值重复的情况
                     if len(displacement) > 1:

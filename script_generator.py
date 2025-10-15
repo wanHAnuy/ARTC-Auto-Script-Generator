@@ -374,16 +374,7 @@ class AbaqusScriptGenerator:
         # script_type = self._determine_script_type(speed_value, direction_value)
 
    
-        # 如果是Direction模式且为X方向（static脚本基础），添加边界条件设置
-        bc_code = ""
-        if direction_value == "X":
-            bc_code = """
-mdb.models['Model-1'].boundaryConditions['BC-2'].setValues(u1=UNSET, u2=SET)
-
-mdb.models['Model-1'].boundaryConditions['BC-2'].setValuesInStep(
-    stepName='Step-1', u1=1.0, u2=0.0)
-
-"""
+        # Direction X 模式的边界条件将在模板内部直接替换，不需要在这里添加
         # 如果是Direction模式且为非X方向（dynamic脚本基础），添加速度场和边界条件设置
         velocity_bc_code = ""
         tie_constraint_code = ""
@@ -448,14 +439,23 @@ if top_faces:
 
         # 根据direction是否选中决定使用U1还是U2
         if direction_value:
-            disp_var_name = "U1" 
+            disp_var_name = "U1"
         else:
             disp_var_name = "U2"  # 默认使用U2
+
+        # 如果是Direction X模式，需要替换模板中的u2变量定义
+        if direction_value == "X":
+            # 替换 u2=-0.4*cell_size 为 u1=-0.4*cell_size
+            content = re.sub(r'u2=-0\.4\*cell_size', 'u1=-0.4*cell_size', content)
+            # 替换边界条件中的 u2=u2 为 u1=u1 (在DisplacementBC中)
+            content = re.sub(r'u1=0\.0, u2=u2,', 'u1=u1, u2=0.0,', content)
+            # 替换setValuesInStep中的 u2=u2 为 u1=u1
+            content = re.sub(r'u2=u2,', 'u1=u1,', content)
 
         addition = f"""
 {velocity_bc_code}
 {tie_constraint_code}
-# {bc_code}a = mdb.models['Model-1'].rootAssembly
+# a = mdb.models['Model-1'].rootAssembly
 # a.regenerate()
 
 os.chdir(r"{output_dir}")

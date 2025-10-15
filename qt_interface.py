@@ -715,17 +715,23 @@ class ModernInterface(QMainWindow):
             if strut_radius:
                 folder_parts.append(strut_radius.currentText())
 
-            # 添加类型标识 (static/speed/direction)
-            if speed_checkbox and speed_checkbox.isChecked():
-                if direction_checkbox and direction_checkbox.isChecked():
-                    # 如果启用了方向，添加方向信息
-                    if direction_dropdown:
-                        direction = direction_dropdown.currentText()
-                        folder_parts.append(f"{direction}_500")
-                    else:
-                        folder_parts.append("dir_500")
+            # 添加类型标识 (使用实际的 speed_value 或 direction_value)
+            # 注意：Speed 和 Directions 是互斥的
+            if direction_checkbox and direction_checkbox.isChecked():
+                # direction模式：使用direction的实际值（如 X, X_50, X_500等）
+                if direction_dropdown:
+                    direction = direction_dropdown.currentText()
+                    folder_parts.append(direction)
                 else:
-                    folder_parts.append("speed_500")
+                    folder_parts.append("dir")
+            elif speed_checkbox and speed_checkbox.isChecked():
+                # speed模式：使用speed的实际值（如 50, 500等）
+                speed_dropdown = self.dropdowns.get("Speed:", None)
+                if speed_dropdown:
+                    speed = speed_dropdown.currentText()
+                    folder_parts.append(speed)
+                else:
+                    folder_parts.append("speed")
             else:
                 folder_parts.append("static")
 
@@ -777,6 +783,8 @@ class ModernInterface(QMainWindow):
                     strut_radius = self.dropdowns.get("Strut radius:", None)
                     speed_checkbox = self.checkboxes.get("Speed:", None)
                     direction_checkbox = self.checkboxes.get("Directions:", None)
+                    speed_dropdown = self.dropdowns.get("Speed:", None)
+                    direction_dropdown = self.dropdowns.get("Directions:", None)
 
                     config_parts = []
                     if cell_size:
@@ -784,10 +792,20 @@ class ModernInterface(QMainWindow):
                     if strut_radius:
                         config_parts.append(strut_radius.currentText())
 
-                    # 判断是static/speed/direction
-                    if speed_checkbox and speed_checkbox.isChecked():
-                        if direction_checkbox and direction_checkbox.isChecked():
+                    # 使用实际的 speed_value 或 direction_value
+                    # 注意：Speed 和 Directions 是互斥的
+                    if direction_checkbox and direction_checkbox.isChecked():
+                        # direction模式：使用direction的实际值（如 X, X_50, X_500等）
+                        if direction_dropdown:
+                            direction_val = direction_dropdown.currentText()
+                            config_parts.append(direction_val)
+                        else:
                             config_parts.append("dir")
+                    elif speed_checkbox and speed_checkbox.isChecked():
+                        # speed模式：使用speed的实际值（如 50, 500等）
+                        if speed_dropdown:
+                            speed_val = speed_dropdown.currentText()
+                            config_parts.append(speed_val)
                         else:
                             config_parts.append("speed")
                     else:
